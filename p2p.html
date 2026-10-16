@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>视频房间</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --text: #e8eaed; --muted: #9aa0a6;
+    --accent: #3b82f6; --danger: #ef4444; --border: #2a2e37;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  button, input { font: inherit; }
+
+  #lobby { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .card { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px 24px; }
+  .card h1 { margin: 0 0 6px; font-size: 22px; }
+  .card p { margin: 0 0 20px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .card input { width: 100%; padding: 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 18px; text-align: center; letter-spacing: 2px; }
+  .card input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .primary { width: 100%; margin-top: 14px; padding: 14px; border: 0; border-radius: 10px;
+    background: var(--accent); color: #fff; font-size: 16px; cursor: pointer; }
+  .primary:disabled { opacity: .5; cursor: default; }
+  .err { color: var(--danger); font-size: 14px; margin-top: 12px; min-height: 1em; }
+
+  #call { position: fixed; inset: 0; display: none; background: #000; }
+  #remote { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  #local { position: absolute; right: 16px; top: calc(16px + env(safe-area-inset-top)); width: 28vw; max-width: 200px;
+    aspect-ratio: 3/4; object-fit: cover; border-radius: 12px; border: 2px solid rgba(255,255,255,.25);
+    background: #222; }
+  #local.mirror { transform: scaleX(-1); }
+  #status { position: absolute; left: 16px; top: calc(16px + env(safe-area-inset-top)); max-width: calc(100% - 32px - 30vw);
+    background: rgba(0,0,0,.55); padding: 8px 12px; border-radius: 10px; font-size: 14px; line-height: 1.5; }
+  #status b { font-variant-numeric: tabular-nums; }
+  #waiting { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; padding: 16px; text-align: center; color: var(--muted); pointer-events: none; }
+  #waiting .big { font-size: 18px; color: var(--text); }
+  #waiting button { pointer-events: auto; }
+  .ghost { padding: 10px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,.3);
+    background: rgba(255,255,255,.08); color: #fff; cursor: pointer; }
+  #controls { position: absolute; left: 0; right: 0; bottom: calc(24px + env(safe-area-inset-bottom));
+    display: flex; justify-content: center; gap: 18px; }
+  .ctl { width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer; font-size: 13px;
+    background: rgba(255,255,255,.18); color: #fff; backdrop-filter: blur(6px); }
+  .ctl.off { background: #fff; color: #111; }
+  .ctl.hang { background: var(--danger); }
+  .ctl[hidden] { display: none; }
+  .ctl:disabled { opacity: .4; cursor: default; }
+  #playBtn { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: none;
+    padding: 14px 22px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font-size: 16px; cursor: pointer; }
+  #remoteOff { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 16px; background: #111; }
+  @media (max-width: 400px) { #controls { gap: 12px; } .ctl { width: 52px; height: 52px; font-size: 12px; } }
+</style>
+</head>
+<body>
+
+<div id="lobby">
+  <form class="card" id="joinForm">
+    <h1>视频房间</h1>
+    <p>两个人输入同一个房间号，就能开始视频通话。</p>
+    <input id="roomInput" placeholder="输入房间号" maxlength="32" autocomplete="off" inputmode="text" required>
+    <button class="primary" id="joinBtn" type="submit">进入房间</button>
+    <div class="err" id="lobbyErr"></div>
+  </form>
+</div>
+
+<div id="call">
+  <video id="remote" autoplay playsinline></video>
+  <div id="remoteOff">对方关闭了摄像头</div>
+  <div id="waiting">
+    <div class="big" id="waitText">等待对方加入…</div>
+    <div>把房间号告诉对方，或直接发链接</div>
+    <button class="ghost" id="copyBtn" type="button">复制邀请链接</button>
+  </div>
+  <video id="local" class="mirror" autoplay playsinline muted></video>
+  <button id="playBtn" type="button">点击开启画面和声音</button>
+  <div id="status">房间 <b id="roomLabel"></b><br><span id="statusText">连接中…</span></div>
+  <div id="controls">
+    <button class="ctl" id="micBtn" type="button">麦克风</button>
+    <button class="ctl" id="camBtn" type="button">摄像头</button>
+    <button class="ctl" id="flipBtn" type="button" hidden>翻转</button>
+    <button class="ctl hang" id="hangBtn" type="button">挂断</button>
+  </div>
+</div>
+
+<script src="peerjs.min.js"></script>
+<script>window.Peer || document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');</script>
+<script>
+// 信令：部署了自己的服务器（server/）就用自己的，否则用 PeerJS 公共服务器。
+// 第一个进房间的人占用"房间 ID"当房主；
+// 第二个人先开数据通道问房主"能进吗"，房主回 ok 再打视频电话，回 full 就是满员。
+const PREFIX = 'jjvc-room-';
+let ICE = { iceServers: [
+  { urls: 'stun:stun.miwifi.com:3478' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' },
+] };
+let SERVER = {};
+
+// 自己的服务器会返回 config.json（含 TURN 中转的临时密码），每次进房间重新取
+async function loadConfig() {
+  try {
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 3000);
+    const res = await fetch('config.json', { cache: 'no-store', signal: ctl.signal });
+    const cfg = res.ok && await res.json();
+    if (!cfg || !cfg.selfHosted) return;
+    const secure = location.protocol === 'https:';
+    SERVER = { host: location.hostname, port: Number(location.port) || (secure ? 443 : 80), path: cfg.path || '/peerjs', secure };
+    if (cfg.iceServers && cfg.iceServers.length) ICE = { iceServers: cfg.iceServers };
+  } catch (_) {}
+}
+
+const $ = id => document.getElementById(id);
+let localStream = null, peer = null, call = null, dataConn = null, partnerId = null;
+let room = '', leaving = false, full = false, retryTimer = null, reserveTimer = null, wakeLock = null;
+let facing = 'user';
+
+function setStatus(t) { $('statusText').textContent = t; }
+function showWaiting(text) { $('waitText').textContent = text; $('waiting').style.display = 'flex'; }
+function hideWaiting() { $('waiting').style.display = 'none'; }
+function hostId(r) { return PREFIX + encodeURIComponent(r).replace(/[^a-zA-Z0-9]/g, '_'); }
+function isHost() { return peer && peer.id === hostId(room); }
+
+// 链接里带房间号：?room=1234
+const urlRoom = new URLSearchParams(location.search).get('room');
+if (urlRoom) $('roomInput').value = urlRoom;
+
+async function getMedia() {
+  const audio = { echoCancellation: true, noiseSuppression: true };
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio });
+  } catch (err) {
+    // 没有摄像头或摄像头被占用时，退回纯语音
+    if (['NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError'].includes(err.name)) {
+      return await navigator.mediaDevices.getUserMedia({ audio });
+    }
+    throw err;
+  }
+}
+
+$('joinForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  room = $('roomInput').value.trim();
+  if (!room) return;
+  $('joinBtn').disabled = true;
+  $('lobbyErr').textContent = '';
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    $('joinBtn').disabled = false;
+    $('lobbyErr').textContent = '需要用 https 打开网页才能使用摄像头';
+    return;
+  }
+  try {
+    localStream = await getMedia();
+  } catch (err) {
+    $('joinBtn').disabled = false;
+    $('lobbyErr').textContent = err.name === 'NotAllowedError'
+      ? '摄像头/麦克风权限被拒绝，请在浏览器设置里允许后重试'
+      : '无法打开摄像头/麦克风：' + (err.message || err.name);
+    return;
+  }
+  await loadConfig();
+  history.replaceState(null, '', '?room=' + encodeURIComponent(room));
+  facing = 'user';
+  $('local').srcObject = localStream;
+  $('local').classList.add('mirror');
+  const hasVideo = localStream.getVideoTracks().length > 0;
+  $('camBtn').disabled = !hasVideo;
+  $('local').style.display = hasVideo ? '' : 'none';
+  updateFlipBtn();
+  $('roomLabel').textContent = room;
+  $('lobby').style.display = 'none';
+  $('call').style.display = 'block';
+  leaving = false; full = false;
+  keepAwake();
+  join();
+});
+
+// ---------- 建立连接 ----------
+
+function join() {
+  clearTimeout(retryTimer);
+  if (leaving || full) return;
+  setStatus('连接中…');
+  showWaiting('连接中…');
+  // 先尝试做房主
+  const p = new Peer(hostId(room), { ...SERVER, config: ICE });
+  let opened = false;
+  peer = p;
+  p.on('open', () => {
+    opened = true;
+    setStatus('已进入房间，等待对方');
+    showWaiting('等待对方加入…');
+  });
+  p.on('connection', conn => {
+    conn.on('open', async () => {
+      if (p !== peer) return conn.close();
+      if (partnerId && partnerId !== conn.peer) {
+        const alive = await partnerAlive();
+        if (p !== peer) return conn.close();
+        if (alive && partnerId) {
+          conn.send({ t: 'full' });
+          setTimeout(() => conn.close(), 1000);
+          return;
+        }
+        // 原来那个人其实已经掉线了（比如断网后刷新），把位置让给新来的
+        if (partnerId) resetCall();
+      }
+      partnerId = conn.peer;
+      bindData(conn);
+      conn.send({ t: 'ok' });
+      // 对方 20 秒内没接通视频，就释放名额
+      clearTimeout(reserveTimer);
+      reserveTimer = setTimeout(() => {
+        if (dataConn === conn && !(call && call.gotStream)) onRemoteLeft();
+      }, 20000);
+    });
+  });
+  p.on('call', incoming => {
+    if (p !== peer || incoming.peer !== partnerId || call) { incoming.close(); return; }
+    incoming.answer(localStream);
+    attach(incoming);
+  });
+  p.on('error', err => {
+    if (p !== peer) return;
+    if (err.type === 'unavailable-id' && !opened) {
+      // 房间里已经有人：用随机 ID 连过去
+      peer = null;
+      p.destroy();
+      joinAsGuest();
+    } else if (err.type === 'unavailable-id') {
+      // 和服务器断线重连时房间 ID 还没释放；通话本身不受影响，稍后再试
+      setTimeout(() => { if (p === peer && p.disconnected && !p.destroyed) p.reconnect(); }, 3000);
+    } else {
+      handleError(err);
+    }
+  });
+  p.on('disconnected', () => {
+    // 和信令服务器断开不影响已建立的通话，只是重连一下
+    if (p === peer && !leaving) setTimeout(() => { if (p === peer && p.disconnected && !p.destroyed) p.reconnect(); }, 1000);
+  });
+}
+
+function joinAsGuest() {
+  if (leaving || full) return;
+  const p = new Peer({ ...SERVER, config: ICE });
+  peer = p;
+  p.on('open', () => {
+    if (p !== peer) return;
+    setStatus('正在呼叫对方…');
+    const conn = p.connect(hostId(room), { reliable: true });
+    bindData(conn);
+    // 对方没响应时，过一会儿重新来过
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      if (p === peer && !(call && call.gotStream)) { setStatus('对方没有响应，重试中…'); restart(); }
+    }, 15000);
+  });
+  p.on('error', err => {
+    if (p !== peer) return;
+    // 房主刚好离开：重新进入，自己做房主
+    if (err.type === 'peer-unavailable') restart();
+    else handleError(err);
+  });
+}
+
+// 有新的人来时，先问一下现在的对方还在不在（对方崩溃/断网时连接状态要过好几秒才变）
+let pongWaiter = null;
+function partnerAlive() {
+  const pc = call && call.peerConnection;
+  if (!pc) return Promise.resolve(true); // 刚分配名额、视频还没开始打，算占用（20 秒后自动释放）
+  if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) return Promise.resolve(false);
+  if (!dataConn || !dataConn.open) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const t = setTimeout(() => { pongWaiter = null; resolve(false); }, 2500);
+    pongWaiter = () => { clearTimeout(t); pongWaiter = null; resolve(true); };
+    sendData({ t: 'ping' });
+  });
+}
+
+function bindData(conn) {
+  dataConn = conn;
+  conn.on('data', msg => {
+    if (conn !== dataConn || !msg) return;
+    if (msg.t === 'ok' && !isHost() && !call) {
+      attach(peer.call(hostId(room), localStream));
+    } else if (msg.t === 'full') {
+      showFull();
+    } else if (msg.t === 'bye') {
+      onRemoteLeft();
+    } else if (msg.t === 'ping') {
+      sendData({ t: 'pong' });
+    } else if (msg.t === 'pong') {
+      if (pongWaiter) pongWaiter();
+    } else if (msg.t === 'state') {
+      showRemoteState(msg);
+    }
+  });
+  conn.on('close', () => { if (conn === dataConn && call && call.gotStream) onRemoteLeft(); });
+}
+
+function sendData(msg) {
+  try { if (dataConn && dataConn.open) dataConn.send(msg); } catch (_) {}
+}
+
+function sendState() {
+  const a = localStream && localStream.getAudioTracks()[0];
+  const v = localStream && localStream.getVideoTracks()[0];
+  sendData({ t: 'state', mic: !!(a && a.enabled), cam: !!(v && v.enabled) });
+}
+
+function attach(c) {
+  call = c;
+  c.on('stream', stream => {
+    if (c !== call || c.gotStream) return;
+    c.gotStream = true;
+    clearTimeout(retryTimer);
+    clearTimeout(reserveTimer);
+    const v = $('remote');
+    v.srcObject = stream;
+    v.play().catch(() => { $('playBtn').style.display = 'block'; });
+    hideWaiting();
+    setStatus('通话中');
+    sendState();
+  });
+  c.on('close', () => { if (c === call) onRemoteLeft(); });
+  c.on('error', () => { if (c === call) onRemoteLeft(); });
+  // 检测网络断开（对方直接关网页、断网时不一定会有 close 事件）
+  const watch = () => {
+    if (c !== call) return;
+    const pc = c.peerConnection;
+    if (!pc) return setTimeout(watch, 300);
+    pc.addEventListener('iceconnectionstatechange', () => {
+      const s = pc.iceConnectionState;
+      if (c !== call) return;
+      if (s === 'failed') {
+        onRemoteLeft('连接失败（可能是网络限制），重试中…');
+      } else if (s === 'disconnected') {
+        setStatus('网络不稳定…');
+        setTimeout(() => { if (c === call && pc.iceConnectionState === 'disconnected') onRemoteLeft(); }, 6000);
+      } else if ((s === 'connected' || s === 'completed') && c.gotStream) {
+        setStatus('通话中');
+      }
+    });
+  };
+  watch();
+}
+
+function resetCall() {
+  clearTimeout(retryTimer);
+  clearTimeout(reserveTimer);
+  const c = call, d = dataConn;
+  call = null; dataConn = null; partnerId = null;
+  try { if (c) c.close(); } catch (_) {}
+  try { if (d) d.close(); } catch (_) {}
+  $('remote').srcObject = null;
+  $('remoteOff').style.display = 'none';
+  $('playBtn').style.display = 'none';
+}
+
+function onRemoteLeft(text) {
+  if (leaving || full) return;
+  const host = isHost() && !peer.destroyed;
+  resetCall();
+  showWaiting('对方已离开，等待重新加入…');
+  if (host) {
+    // 自己是房主：保留房间，继续等
+    setStatus(text || '已进入房间，等待对方');
+  } else {
+    setStatus(text || '重新进入房间…');
+    restart();
+  }
+}
+
+function restart() {
+  resetCall();
+  if (peer) { const p = peer; peer = null; p.destroy(); }
+  // 稍等一下，让服务器释放旧的房间 ID；随机延迟避免两边同时抢
+  retryTimer = setTimeout(join, 1500 + Math.random() * 1500);
+}
+
+function showFull() {
+  full = true;
+  resetCall();
+  if (peer) { const p = peer; peer = null; p.destroy(); }
+  showWaiting('房间已满（已经有两个人在通话）');
+  setStatus('房间已满，请换一个房间号');
+}
+
+function handleError(err) {
+  console.warn(err);
+  const msg = {
+    'network': '连不上信令服务器，检查网络',
+    'server-error': '信令服务器出错',
+    'socket-error': '连不上信令服务器',
+    'socket-closed': '与服务器的连接断开',
+    'browser-incompatible': '这个浏览器不支持视频通话，请换 Chrome / Safari',
+  }[err.type] || ('出错了：' + err.type);
+  if (err.type === 'browser-incompatible') { setStatus(msg); return; }
+  // 已经在通话中就不打断，信令断开不影响视频
+  if (call && call.gotStream) return;
+  setStatus(msg + '，重试中…');
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(restart, 3000);
+}
+
+function showRemoteState(s) {
+  $('remoteOff').style.display = s.cam ? 'none' : 'flex';
+  if (call && call.gotStream) setStatus(s.mic ? '通话中' : '通话中 · 对方已静音');
+}
+
+// ---------- 按钮 ----------
+
+$('micBtn').onclick = () => {
+  const t = localStream.getAudioTracks()[0]; if (!t) return;
+  t.enabled = !t.enabled; $('micBtn').classList.toggle('off', !t.enabled);
+  $('micBtn').textContent = t.enabled ? '麦克风' : '已静音';
+  sendState();
+};
+
+$('camBtn').onclick = () => {
+  const t = localStream.getVideoTracks()[0]; if (!t) return;
+  t.enabled = !t.enabled; $('camBtn').classList.toggle('off', !t.enabled);
+  $('camBtn').textContent = t.enabled ? '摄像头' : '已关闭';
+  sendState();
+};
+
+async function updateFlipBtn() {
+  let n = 0;
+  try { n = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput').length; } catch (_) {}
+  $('flipBtn').hidden = !(localStream && localStream.getVideoTracks().length && n > 1);
+}
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', updateFlipBtn);
+
+async function openCamera(constraints) {
+  const s = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+  return s.getVideoTracks()[0];
+}
+
+// 前后摄像头切换：手机上按 facingMode 切；电脑上有多个摄像头就轮流切
+$('flipBtn').onclick = async () => {
+  const btn = $('flipBtn');
+  const old = localStream.getVideoTracks()[0];
+  if (!old || btn.disabled) return;
+  btn.disabled = true;
+  const enabled = old.enabled;
+  const oldId = old.getSettings().deviceId;
+  const sender = call && call.peerConnection &&
+    call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+  const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  const next = facing === 'user' ? 'environment' : 'user';
+  // iOS 等设备不能同时开两个摄像头，先关旧的
+  old.stop();
+  let track = null;
+  try {
+    track = await openCamera({ ...size, facingMode: { exact: next } });
+    // 部分设备不认 facingMode，打开的还是同一个摄像头
+    if (track.getSettings().deviceId && track.getSettings().deviceId === oldId) { track.stop(); track = null; }
+  } catch (_) {}
+  if (!track) {
+    try {
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+      const i = cams.findIndex(d => d.deviceId === oldId);
+      const target = cams[(i + 1) % cams.length];
+      track = await openCamera({ ...size, deviceId: { exact: target.deviceId } });
+    } catch (_) {}
+  }
+  if (!track) {
+    // 切换失败，恢复原摄像头
+    try { track = await openCamera({ ...size, deviceId: oldId ? { exact: oldId } : undefined }); } catch (_) {}
+  }
+  if (track) {
+    track.enabled = enabled;
+    localStream.removeTrack(old);
+    localStream.addTrack(track);
+    const f = track.getSettings().facingMode;
+    facing = f || (facing === 'user' ? 'environment' : 'user');
+    $('local').classList.toggle('mirror', facing !== 'environment');
+    $('local').srcObject = localStream;
+    const cur = call && call.peerConnection &&
+      call.peerConnection.getSenders().find(s => s.track ? s.track.kind === 'video' : s === sender);
+    if (cur) { try { await cur.replaceTrack(track); } catch (e) { console.warn(e); } }
+  } else {
+    setStatus('切换摄像头失败');
+  }
+  btn.disabled = false;
+};
+
+$('playBtn').onclick = () => {
+  $('remote').play().then(() => { $('playBtn').style.display = 'none'; }).catch(() => {});
+};
+
+function leaveRoom() {
+  leaving = true;
+  sendData({ t: 'bye' });
+  clearTimeout(retryTimer);
+  clearTimeout(reserveTimer);
+  const p = peer, c = call;
+  call = dataConn = peer = partnerId = null;
+  // 留一点时间把 bye 发出去
+  setTimeout(() => { try { if (c) c.close(); } catch (_) {} if (p) p.destroy(); }, 300);
+}
+
+$('hangBtn').onclick = () => {
+  leaveRoom();
+  localStream.getTracks().forEach(t => t.stop());
+  $('remote').srcObject = $('local').srcObject = null;
+  $('remoteOff').style.display = 'none';
+  $('playBtn').style.display = 'none';
+  $('call').style.display = 'none';
+  $('lobby').style.display = 'flex';
+  $('joinBtn').disabled = false;
+  ['micBtn', 'camBtn'].forEach(id => $(id).classList.remove('off'));
+  $('micBtn').textContent = '麦克风'; $('camBtn').textContent = '摄像头';
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+};
+
+$('copyBtn').onclick = async () => {
+  const link = location.origin + location.pathname + '?room=' + encodeURIComponent(room);
+  try { await navigator.clipboard.writeText(link); $('copyBtn').textContent = '已复制 ✓'; }
+  catch (_) { prompt('复制这个链接发给对方：', link); }
+  setTimeout(() => $('copyBtn').textContent = '复制邀请链接', 2000);
+};
+
+// 通话时不让手机锁屏
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && localStream && !leaving && $('call').style.display === 'block') keepAwake();
+});
+
+window.addEventListener('pagehide', () => {
+  sendData({ t: 'bye' });
+  if (peer) peer.destroy();
+});
+</script>
+</body>
+</html>
