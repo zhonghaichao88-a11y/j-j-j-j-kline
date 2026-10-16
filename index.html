@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>视频房间</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --text: #e8eaed; --muted: #9aa0a6;
+    --accent: #3b82f6; --danger: #ef4444; --border: #2a2e37;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  button, input { font: inherit; }
+
+  #lobby { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .card { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px 24px; }
+  .card h1 { margin: 0 0 6px; font-size: 22px; }
+  .card p { margin: 0 0 20px; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .card input { width: 100%; padding: 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 18px; text-align: center; letter-spacing: 2px; }
+  .card input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .primary { width: 100%; margin-top: 14px; padding: 14px; border: 0; border-radius: 10px;
+    background: var(--accent); color: #fff; font-size: 16px; cursor: pointer; }
+  .primary:disabled { opacity: .5; cursor: default; }
+  .err { color: var(--danger); font-size: 14px; margin-top: 12px; min-height: 1em; }
+
+  #call { position: fixed; inset: 0; display: none; background: #000; }
+  #remote { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  #local { position: absolute; right: 16px; top: calc(16px + env(safe-area-inset-top)); width: 28vw; max-width: 200px;
+    aspect-ratio: 3/4; object-fit: cover; border-radius: 12px; border: 2px solid rgba(255,255,255,.25);
+    background: #222; transform: scaleX(-1); }
+  #status { position: absolute; left: 16px; top: calc(16px + env(safe-area-inset-top)); max-width: calc(100% - 32px - 30vw);
+    background: rgba(0,0,0,.55); padding: 8px 12px; border-radius: 10px; font-size: 14px; line-height: 1.5; }
+  #status b { font-variant-numeric: tabular-nums; }
+  #waiting { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; padding: 16px; text-align: center; color: var(--muted); pointer-events: none; }
+  #waiting .big { font-size: 18px; color: var(--text); }
+  #waiting button { pointer-events: auto; }
+  .ghost { padding: 10px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,.3);
+    background: rgba(255,255,255,.08); color: #fff; cursor: pointer; }
+  #controls { position: absolute; left: 0; right: 0; bottom: calc(24px + env(safe-area-inset-bottom));
+    display: flex; justify-content: center; gap: 18px; }
+  .ctl { width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer; font-size: 13px;
+    background: rgba(255,255,255,.18); color: #fff; backdrop-filter: blur(6px); }
+  .ctl.off { background: #fff; color: #111; }
+  .ctl.hang { background: var(--danger); }
+</style>
+</head>
+<body>
+
+<div id="lobby">
+  <form class="card" id="joinForm">
+    <h1>视频房间</h1>
+    <p>两个人输入同一个房间号，就能开始视频通话。</p>
+    <input id="roomInput" placeholder="输入房间号" maxlength="32" autocomplete="off" inputmode="text" required>
+    <button class="primary" id="joinBtn" type="submit">进入房间</button>
+    <div class="err" id="lobbyErr"></div>
+  </form>
+</div>
+
+<div id="call">
+  <video id="remote" autoplay playsinline></video>
+  <div id="waiting">
+    <div class="big" id="waitText">等待对方加入…</div>
+    <div>把房间号告诉对方，或直接发链接</div>
+    <button class="ghost" id="copyBtn" type="button">复制邀请链接</button>
+  </div>
+  <video id="local" autoplay playsinline muted></video>
+  <div id="status">房间 <b id="roomLabel"></b><br><span id="statusText">连接中…</span></div>
+  <div id="controls">
+    <button class="ctl" id="micBtn" type="button">麦克风</button>
+    <button class="ctl" id="camBtn" type="button">摄像头</button>
+    <button class="ctl hang" id="hangBtn" type="button">挂断</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+// 信令走 PeerJS 公共服务器；第一个进房间的人占用 "房间 ID"，第二个人连过去。
+const PREFIX = 'jjvc-room-';
+const ICE = { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.miwifi.com:3478' },
+] };
+
+const $ = id => document.getElementById(id);
+let localStream = null, peer = null, call = null, room = '', leaving = false, retryTimer = null;
+
+function setStatus(t) { $('statusText').textContent = t; }
+function showWaiting(text) { $('waitText').textContent = text; $('waiting').style.display = 'flex'; }
+function hideWaiting() { $('waiting').style.display = 'none'; }
+function hostId(r) { return PREFIX + encodeURIComponent(r).replace(/[^a-zA-Z0-9]/g, '_'); }
+
+// 链接里带房间号：?room=1234
+const urlRoom = new URLSearchParams(location.search).get('room');
+if (urlRoom) $('roomInput').value = urlRoom;
+
+$('joinForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  room = $('roomInput').value.trim();
+  if (!room) return;
+  $('joinBtn').disabled = true;
+  $('lobbyErr').textContent = '';
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
+  } catch (err) {
+    $('joinBtn').disabled = false;
+    $('lobbyErr').textContent = window.isSecureContext
+      ? '无法打开摄像头/麦克风：' + (err.name === 'NotAllowedError' ? '请允许浏览器权限' : err.message)
+      : '需要用 https 打开网页才能使用摄像头';
+    return;
+  }
+  history.replaceState(null, '', '?room=' + encodeURIComponent(room));
+  $('local').srcObject = localStream;
+  $('roomLabel').textContent = room;
+  $('lobby').style.display = 'none';
+  $('call').style.display = 'block';
+  leaving = false;
+  join();
+});
+
+function join() {
+  clearTimeout(retryTimer);
+  if (leaving) return;
+  setStatus('连接中…');
+  showWaiting('连接中…');
+  // 先尝试做房主
+  const p = new Peer(hostId(room), { config: ICE });
+  peer = p;
+  p.on('open', () => {
+    setStatus('已进入房间，等待对方');
+    showWaiting('等待对方加入…');
+  });
+  p.on('call', incoming => {
+    if (call && call.open) { incoming.close(); return; } // 房间已满，只允许两人
+    incoming.answer(localStream);
+    attach(incoming);
+  });
+  p.on('error', err => {
+    if (p !== peer) return;
+    if (err.type === 'unavailable-id') {
+      // 房间里已经有人：用随机 ID 连过去
+      p.destroy();
+      joinAsGuest();
+    } else {
+      handleError(err);
+    }
+  });
+  p.on('disconnected', () => { if (p === peer && !leaving) p.reconnect(); });
+}
+
+function joinAsGuest() {
+  const p = new Peer({ config: ICE });
+  peer = p;
+  p.on('open', () => {
+    setStatus('正在呼叫对方…');
+    const c = p.call(hostId(room), localStream);
+    attach(c);
+    // 对方满员或没响应时，过一会儿重试
+    retryTimer = setTimeout(() => {
+      if (p === peer && !(call && call.open)) { setStatus('对方没有响应，重试中…'); restart(); }
+    }, 15000);
+  });
+  p.on('error', err => {
+    if (p !== peer) return;
+    // 房主刚好离开：重新进入，自己做房主
+    if (err.type === 'peer-unavailable') restart();
+    else handleError(err);
+  });
+}
+
+function attach(c) {
+  call = c;
+  c.on('stream', stream => {
+    if (c !== call) return;
+    clearTimeout(retryTimer);
+    $('remote').srcObject = stream;
+    hideWaiting();
+    setStatus('通话中');
+  });
+  c.on('close', () => { if (c === call) onRemoteLeft(); });
+  c.on('error', () => { if (c === call) onRemoteLeft(); });
+  // 检测网络断开（PeerJS 的 close 事件在部分浏览器里不触发）
+  const watch = () => {
+    const pc = c.peerConnection;
+    if (!pc) return setTimeout(watch, 300);
+    pc.addEventListener('iceconnectionstatechange', () => {
+      const s = pc.iceConnectionState;
+      if (c !== call) return;
+      if (s === 'failed') {
+        setStatus('连接失败（可能是网络限制）');
+        onRemoteLeft();
+      } else if (s === 'disconnected') {
+        setStatus('网络不稳定…');
+        setTimeout(() => { if (c === call && pc.iceConnectionState === 'disconnected') onRemoteLeft(); }, 5000);
+      } else if (s === 'connected' || s === 'completed') {
+        setStatus('通话中');
+      }
+    });
+  };
+  watch();
+}
+
+function onRemoteLeft() {
+  if (leaving) return;
+  if (call) { const c = call; call = null; try { c.close(); } catch (_) {} }
+  $('remote').srcObject = null;
+  showWaiting('对方已离开，等待重新加入…');
+  restart();
+}
+
+function restart() {
+  clearTimeout(retryTimer);
+  if (call) { const c = call; call = null; try { c.close(); } catch (_) {} }
+  if (peer) { const p = peer; peer = null; p.destroy(); }
+  // 稍等一下，让服务器释放旧的房间 ID
+  retryTimer = setTimeout(join, 1500 + Math.random() * 1000);
+}
+
+function handleError(err) {
+  console.warn(err);
+  const msg = {
+    'network': '连不上信令服务器，检查网络',
+    'server-error': '信令服务器出错',
+    'socket-error': '连不上信令服务器',
+    'socket-closed': '与服务器的连接断开',
+    'browser-incompatible': '这个浏览器不支持视频通话',
+  }[err.type] || ('出错了：' + err.type);
+  setStatus(msg + '，重试中…');
+  if (err.type !== 'browser-incompatible') { clearTimeout(retryTimer); retryTimer = setTimeout(restart, 3000); }
+}
+
+$('micBtn').onclick = () => {
+  const t = localStream.getAudioTracks()[0]; if (!t) return;
+  t.enabled = !t.enabled; $('micBtn').classList.toggle('off', !t.enabled);
+  $('micBtn').textContent = t.enabled ? '麦克风' : '已静音';
+};
+$('camBtn').onclick = () => {
+  const t = localStream.getVideoTracks()[0]; if (!t) return;
+  t.enabled = !t.enabled; $('camBtn').classList.toggle('off', !t.enabled);
+  $('camBtn').textContent = t.enabled ? '摄像头' : '已关闭';
+};
+$('hangBtn').onclick = () => {
+  leaving = true;
+  clearTimeout(retryTimer);
+  if (call) call.close();
+  if (peer) peer.destroy();
+  call = peer = null;
+  localStream.getTracks().forEach(t => t.stop());
+  $('remote').srcObject = $('local').srcObject = null;
+  $('call').style.display = 'none';
+  $('lobby').style.display = 'flex';
+  $('joinBtn').disabled = false;
+  ['micBtn', 'camBtn'].forEach(id => $(id).classList.remove('off'));
+  $('micBtn').textContent = '麦克风'; $('camBtn').textContent = '摄像头';
+};
+$('copyBtn').onclick = async () => {
+  const link = location.origin + location.pathname + '?room=' + encodeURIComponent(room);
+  try { await navigator.clipboard.writeText(link); $('copyBtn').textContent = '已复制 ✓'; }
+  catch (_) { prompt('复制这个链接发给对方：', link); }
+  setTimeout(() => $('copyBtn').textContent = '复制邀请链接', 2000);
+};
+window.addEventListener('pagehide', () => { if (peer) peer.destroy(); });
+</script>
+</body>
+</html>
