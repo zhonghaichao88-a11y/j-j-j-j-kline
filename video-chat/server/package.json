@@ -1,0 +1,12 @@
+{
+  "name": "video-chat-server",
+  "private": true,
+  "description": "视频房间：网页 + 信令服务器",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "5.1.0",
+    "peer": "1.0.2"
+  }
+}
