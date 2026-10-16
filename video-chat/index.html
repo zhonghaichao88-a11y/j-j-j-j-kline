@@ -92,6 +92,51 @@
 // 通话走声网（Agora）：国内节点 + 自带中转，5G / 公司网络也能连。
 // 同一个房间号 = 同一个频道；一个房间只允许两个人。
 const APP_ID = '642aee87dccc48e4ba404737d081a9ce';
+// 项目开着 App 证书，进房间要 Token，这里在网页里直接生成（证书因此是公开的，账号主人已知情同意）
+const APP_CERT = 'b7434a677a0d430d98804b78c9fd10d2';
+const TOKEN_SECONDS = 24 * 3600;
+
+// 声网 Token（AccessToken2 / 007），算法同官方 agora-token 库的 RtcTokenBuilder2
+const AgoraToken = (() => {
+  const enc = new TextEncoder();
+  const u16 = v => [v & 255, (v >>> 8) & 255];
+  const u32 = v => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+  const str = s => { const b = typeof s === 'string' ? [...enc.encode(s)] : [...s]; return [...u16(b.length), ...b]; };
+  async function hmac(key, msg) {
+    const k = await crypto.subtle.importKey('raw', new Uint8Array(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return [...new Uint8Array(await crypto.subtle.sign('HMAC', k, new Uint8Array(msg)))];
+  }
+  // zlib 格式、不压缩（stored）的 deflate，服务端照常能解
+  function zlibStored(data) {
+    const out = [0x78, 0x01];
+    for (let i = 0; i < data.length || i === 0; i += 65535) {
+      const chunk = data.slice(i, i + 65535), last = i + 65535 >= data.length;
+      out.push(last ? 1 : 0, ...u16(chunk.length), ...u16(~chunk.length & 0xffff), ...chunk);
+      if (last) break;
+    }
+    let a = 1, b = 0;
+    for (const x of data) { a = (a + x) % 65521; b = (b + a) % 65521; }
+    const adler = ((b << 16) | a) >>> 0;
+    out.push(adler >>> 24, (adler >>> 16) & 255, (adler >>> 8) & 255, adler & 255);
+    return out;
+  }
+  async function buildRtc(appId, cert, channel, uid, expireSeconds) {
+    const issueTs = Math.floor(Date.now() / 1000);
+    const salt = Math.floor(Math.random() * 99999999) + 1;
+    const privileges = [1, 2, 3, 4]; // 进频道、发音频、发视频、发数据流
+    const service = [...u16(1), ...u16(privileges.length)];
+    for (const p of privileges) service.push(...u16(p), ...u32(expireSeconds));
+    service.push(...str(channel), ...str(uid === 0 ? '' : String(uid)));
+    const info = [...str(appId), ...u32(issueTs), ...u32(expireSeconds), ...u32(salt), ...u16(1), ...service];
+    let signing = await hmac(u32(issueTs), [...enc.encode(cert)]);
+    signing = await hmac(u32(salt), signing);
+    const signature = await hmac(signing, info);
+    const content = [...str(signature), ...info];
+    let bin = ''; for (const x of zlibStored(content)) bin += String.fromCharCode(x);
+    return '007' + btoa(bin);
+  }
+  return { buildRtc };
+})();
 
 const $ = id => document.getElementById(id);
 let client = null, mic = null, cam = null, partner = null;
@@ -177,13 +222,14 @@ async function joinChannel() {
   client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
   bindClient(client);
   try {
-    await client.join(APP_ID, await channelName(room), null, null);
+    const ch = await channelName(room);
+    await client.join(APP_ID, ch, await AgoraToken.buildRtc(APP_ID, APP_CERT, ch, 0, TOKEN_SECONDS), null);
   } catch (err) {
     if (leaving) return;
     console.warn(err);
     const msg = String(err && err.message || '');
     if (/static key|invalid vendor key|invalid token|token/i.test(msg)) {
-      setStatus('通话服务配置有误（App 证书需要关闭）');
+      setStatus('通话服务验证失败（App ID 或证书不对）');
       showWaiting('暂时无法进入房间');
     } else {
       setStatus('连不上通话服务器，请检查网络后重新进入');
@@ -276,6 +322,10 @@ function bindClient(c) {
     }
     setStatus('已进入房间，等待对方');
     showWaiting('对方已离开，等待重新加入…');
+  });
+  // Token 快过期时自动续期（通话超过 24 小时才会用到）
+  c.on('token-privilege-will-expire', async () => {
+    try { c.renewToken(await AgoraToken.buildRtc(APP_ID, APP_CERT, c.channelName, 0, TOKEN_SECONDS)); } catch (_) {}
   });
   c.on('connection-state-change', (cur, prev, reason) => {
     if (c !== client || leaving) return;
