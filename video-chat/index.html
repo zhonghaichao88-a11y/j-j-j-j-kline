@@ -26,6 +26,11 @@
     background: var(--accent); color: #fff; font-size: 16px; cursor: pointer; }
   .primary:disabled { opacity: .5; cursor: default; }
   .err { color: var(--danger); font-size: 14px; margin-top: 12px; min-height: 1em; }
+  .usage { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); text-align: center;
+    font-size: 13px; line-height: 1.7; color: var(--text); }
+  .usage-note { color: var(--muted); font-size: 12px; }
+  .usage a { color: var(--accent); text-decoration: none; }
+  #callUsage { color: var(--muted); font-size: 12px; }
 
   #call { position: fixed; inset: 0; display: none; background: #000; }
   #remote { position: absolute; inset: 0; background: #000; }
@@ -65,6 +70,11 @@
     <input id="roomInput" placeholder="输入房间号" maxlength="32" autocomplete="off" inputmode="text" required>
     <button class="primary" id="joinBtn" type="submit">进入房间</button>
     <div class="err" id="lobbyErr"></div>
+    <div class="usage">
+      <span id="usageText"></span><br>
+      <span class="usage-note">估算，只统计这台设备上的通话</span><br>
+      <a href="https://console.shengwang.cn/" target="_blank" rel="noopener">去声网控制台查看真实用量 ›</a>
+    </div>
   </form>
 </div>
 
@@ -78,7 +88,7 @@
   </div>
   <div id="local"></div>
   <button id="playBtn" type="button">点击开启声音</button>
-  <div id="status">房间 <b id="roomLabel"></b><br><span id="statusText">连接中…</span></div>
+  <div id="status">房间 <b id="roomLabel"></b><br><span id="statusText">连接中…</span><br><span id="callUsage"></span></div>
   <div id="controls">
     <button class="ctl" id="micBtn" type="button">麦克风</button>
     <button class="ctl" id="camBtn" type="button">摄像头</button>
@@ -526,6 +536,31 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pageshow', () => { if (inCall()) recover(); });
 window.addEventListener('online', () => { if (inCall()) recover(); });
+
+// ---------- 本月用量估算 ----------
+// 声网按每个人在房间里的时长分别计费：两人通话 10 分钟算 20 分钟，一个人等着也算。
+// 这里只能统计这台设备参与的通话，真实数字以声网控制台为准。
+const FREE_MINUTES = 10000;
+function usageKey() { const d = new Date(); return 'jjvc-usage-' + d.getFullYear() + '-' + (d.getMonth() + 1); }
+function getUsage() { try { return Number(localStorage.getItem(usageKey())) || 0; } catch (_) { return 0; } }
+function addUsage(sec) { try { localStorage.setItem(usageKey(), String(getUsage() + sec)); } catch (_) {} }
+function renderUsage() {
+  const used = Math.ceil(getUsage() / 60);
+  const left = Math.max(0, FREE_MINUTES - used);
+  $('usageText').textContent = `本月已用约 ${used} 分钟，免费额度剩约 ${left} 分钟`;
+  $('callUsage').textContent = `本月已用约 ${used} 分钟 / 剩约 ${left} 分钟`;
+}
+let lastTick = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  const sec = Math.min(60, (now - lastTick) / 1000); // 手机休眠后回来不会一下记很多
+  lastTick = now;
+  if (!client || client.connectionState !== 'CONNECTED' || !inCall()) return;
+  const partnerHere = partner !== null && client.remoteUsers.some(u => u.uid === partner);
+  addUsage(sec * (partnerHere ? 2 : 1));
+  renderUsage();
+}, 5000);
+renderUsage();
 
 // 只在真正关掉网页时离开（切到后台不算）
 window.addEventListener('pagehide', e => { if (client && !e.persisted) client.leave(); });
