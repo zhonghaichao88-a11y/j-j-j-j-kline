@@ -140,7 +140,10 @@ const AgoraToken = (() => {
 
 const $ = id => document.getElementById(id);
 let client = null, mic = null, cam = null, partner = null;
-let room = '', leaving = false, wakeLock = null, facing = 'user';
+let room = '', leaving = false, full = false, wakeLock = null, facing = 'user';
+let rejoining = false, joinFails = 0, retryTimer = null;
+const AUDIO_CFG = { AEC: true, ANS: true };
+const VIDEO_CFG = { encoderConfig: '720p_1', optimizationMode: 'motion' };
 
 function setStatus(t) { $('statusText').textContent = t; }
 function showWaiting(text) { $('waitText').textContent = text; $('waiting').style.display = 'flex'; }
@@ -171,14 +174,12 @@ function mediaError(err) {
 }
 
 async function openMedia() {
-  const audioCfg = { AEC: true, ANS: true };
   try {
-    [mic, cam] = await AgoraRTC.createMicrophoneAndCameraTracks(audioCfg,
-      { facingMode: 'user', encoderConfig: '720p_1', optimizationMode: 'motion' });
+    [mic, cam] = await AgoraRTC.createMicrophoneAndCameraTracks(AUDIO_CFG, { ...VIDEO_CFG, facingMode: 'user' });
   } catch (err) {
     // 没有摄像头或摄像头被占用：退回纯语音
     if (['DEVICE_NOT_FOUND', 'NOT_READABLE', 'NotFoundError', 'NotReadableError'].includes(err && (err.code || err.name))) {
-      mic = await AgoraRTC.createMicrophoneAudioTrack(audioCfg);
+      mic = await AgoraRTC.createMicrophoneAudioTrack(AUDIO_CFG);
       cam = null;
     } else {
       throw err;
@@ -202,7 +203,8 @@ $('joinForm').addEventListener('submit', async e => {
     return err(mediaError(e2));
   }
   history.replaceState(null, '', '?room=' + encodeURIComponent(room));
-  leaving = false; partner = null; facing = 'user';
+  leaving = false; full = false; partner = null; facing = 'user'; joinFails = 0;
+  watchTracks();
   $('roomLabel').textContent = room;
   $('lobby').style.display = 'none';
   $('call').style.display = 'block';
@@ -231,12 +233,19 @@ async function joinChannel() {
     if (/static key|invalid vendor key|invalid token|token/i.test(msg)) {
       setStatus('通话服务验证失败（App ID 或证书不对）');
       showWaiting('暂时无法进入房间');
+    } else if (++joinFails <= 5) {
+      // 网络问题：过几秒自动再试
+      setStatus('连不上通话服务器，正在重试…');
+      showWaiting('连接中…');
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(recover, 3000);
     } else {
       setStatus('连不上通话服务器，请检查网络后重新进入');
       showWaiting('连接失败');
     }
     return;
   }
+  joinFails = 0;
   if (leaving) return;
   // 稍等一下，让房间里已有的人都报到
   await new Promise(r => setTimeout(r, 600));
@@ -244,6 +253,7 @@ async function joinChannel() {
   if (client.remoteUsers.length >= 2) {
     // 已经有两个人在通话
     const c = client; client = null;
+    full = true;
     await c.leave().catch(() => {});
     setStatus('房间已满，请换一个房间号');
     showWaiting('房间已满（已经有两个人在通话）');
@@ -305,7 +315,7 @@ function bindClient(c) {
   c.on('user-info-updated', (uid, msg) => {
     if (c !== client || uid !== partner) return;
     if (msg === 'mute-audio') setStatus('通话中 · 对方已静音');
-    if (msg === 'unmute-audio') setStatus('通话中');
+    if (msg === 'unmute-audio' && $('statusText').textContent.startsWith('通话中')) setStatus('通话中');
     if (msg === 'mute-video') { $('remoteOff').textContent = '对方关闭了摄像头'; $('remoteOff').style.display = 'flex'; }
     if (msg === 'unmute-video') $('remoteOff').style.display = 'none';
   });
@@ -331,11 +341,74 @@ function bindClient(c) {
     if (c !== client || leaving) return;
     if (cur === 'RECONNECTING') setStatus('网络不稳定，正在重连…');
     if (cur === 'CONNECTED' && prev === 'RECONNECTING') setStatus(partner ? '通话中' : '已进入房间，等待对方');
-    if (cur === 'DISCONNECTED' && reason && reason !== 'LEAVE') {
-      setStatus('与服务器断开，请挂断后重新进入');
-      showWaiting('连接已断开');
+    if (cur === 'DISCONNECTED' && reason !== 'LEAVE') {
+      // 断线（比如切到后台太久）：在前台就马上重连，在后台就等切回来再连
+      setStatus('连接断开，正在重新连接…');
+      showWaiting('正在重新连接…');
+      if (document.visibilityState === 'visible') { clearTimeout(retryTimer); retryTimer = setTimeout(recover, 1000); }
     }
   });
+}
+
+// ---------- 切回前台 / 断线后自动恢复 ----------
+
+function inCall() { return !leaving && !full && $('call').style.display === 'block'; }
+
+// 摄像头/麦克风被系统停掉（切后台、来电等）时，切回来自动恢复
+function watchTracks() {
+  [mic, cam].forEach(t => { if (t) t.on('track-ended', () => { if (document.visibilityState === 'visible') recover(); }); });
+}
+
+function trackDead(t) {
+  try { return t.getMediaStreamTrack().readyState === 'ended'; } catch (_) { return true; }
+}
+
+async function replaceTrack(kind) {
+  const old = kind === 'audio' ? mic : cam;
+  const fresh = kind === 'audio'
+    ? await AgoraRTC.createMicrophoneAudioTrack(AUDIO_CFG)
+    : await AgoraRTC.createCameraVideoTrack({ ...VIDEO_CFG, facingMode: facing });
+  if (old.muted) await fresh.setMuted(true);
+  const c = client;
+  if (c && c.localTracks.includes(old)) await c.unpublish(old).catch(() => {});
+  old.close();
+  if (kind === 'audio') mic = fresh; else cam = fresh;
+  fresh.on('track-ended', () => { if (document.visibilityState === 'visible') recover(); });
+  if (kind === 'video') fresh.play('local', { mirror: facing !== 'environment', fit: 'cover' });
+  if (c && c === client && c.connectionState === 'CONNECTED') await c.publish(fresh).catch(err => console.warn(err));
+}
+
+async function rejoin() {
+  if (rejoining) return;
+  rejoining = true;
+  const old = client; client = null; partner = null;
+  $('remote').innerHTML = '';
+  $('remoteOff').style.display = 'none';
+  if (old) await old.leave().catch(() => {});
+  try { if (inCall()) await joinChannel(); } finally { rejoining = false; }
+}
+
+async function recover() {
+  if (!inCall()) return;
+  try {
+    if (mic && trackDead(mic)) await replaceTrack('audio');
+    if (cam && trackDead(cam)) await replaceTrack('video');
+  } catch (err) {
+    console.warn(err);
+    setStatus('摄像头/麦克风没能恢复，请挂断后重新进入');
+  }
+  if (!inCall() || rejoining) return; // 正在重新进房间时只修摄像头/麦克风
+  if (!client || client.connectionState === 'DISCONNECTED' || client.connectionState === 'DISCONNECTING') {
+    await rejoin();
+    return;
+  }
+  // 连接还在：把对方的画面和声音重新播一下（iOS 切回来时可能被暂停）
+  const u = client.remoteUsers.find(x => x.uid === partner);
+  if (u) {
+    if (u.videoTrack) { u.videoTrack.stop(); u.videoTrack.play('remote', { fit: 'cover' }); }
+    if (u.audioTrack) u.audioTrack.play();
+  }
+  if (cam && !trackDead(cam)) { cam.stop(); cam.play('local', { mirror: facing !== 'environment', fit: 'cover' }); }
 }
 
 async function resubscribe(c, user) {
@@ -449,10 +522,13 @@ async function keepAwake() {
   try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && client && !leaving) keepAwake();
+  if (document.visibilityState === 'visible' && inCall()) { keepAwake(); recover(); }
 });
+window.addEventListener('pageshow', () => { if (inCall()) recover(); });
+window.addEventListener('online', () => { if (inCall()) recover(); });
 
-window.addEventListener('pagehide', () => { if (client) client.leave(); });
+// 只在真正关掉网页时离开（切到后台不算）
+window.addEventListener('pagehide', e => { if (client && !e.persisted) client.leave(); });
 </script>
 </body>
 </html>
