@@ -28,21 +28,20 @@
   .err { color: var(--danger); font-size: 14px; margin-top: 12px; min-height: 1em; }
 
   #call { position: fixed; inset: 0; display: none; background: #000; }
-  #remote { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  #remote { position: absolute; inset: 0; background: #000; }
   #local { position: absolute; right: 16px; top: calc(16px + env(safe-area-inset-top)); width: 28vw; max-width: 200px;
-    aspect-ratio: 3/4; object-fit: cover; border-radius: 12px; border: 2px solid rgba(255,255,255,.25);
-    background: #222; }
-  #local.mirror { transform: scaleX(-1); }
-  #status { position: absolute; left: 16px; top: calc(16px + env(safe-area-inset-top)); max-width: calc(100% - 32px - 30vw);
+    aspect-ratio: 3/4; border-radius: 12px; border: 2px solid rgba(255,255,255,.25);
+    background: #222; overflow: hidden; z-index: 2; }
+  #status { z-index: 2; position: absolute; left: 16px; top: calc(16px + env(safe-area-inset-top)); max-width: calc(100% - 32px - 30vw);
     background: rgba(0,0,0,.55); padding: 8px 12px; border-radius: 10px; font-size: 14px; line-height: 1.5; }
   #status b { font-variant-numeric: tabular-nums; }
-  #waiting { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+  #waiting { z-index: 1; position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 14px; padding: 16px; text-align: center; color: var(--muted); pointer-events: none; }
   #waiting .big { font-size: 18px; color: var(--text); }
   #waiting button { pointer-events: auto; }
   .ghost { padding: 10px 16px; border-radius: 10px; border: 1px solid rgba(255,255,255,.3);
     background: rgba(255,255,255,.08); color: #fff; cursor: pointer; }
-  #controls { position: absolute; left: 0; right: 0; bottom: calc(24px + env(safe-area-inset-bottom));
+  #controls { z-index: 3; position: absolute; left: 0; right: 0; bottom: calc(24px + env(safe-area-inset-bottom));
     display: flex; justify-content: center; gap: 18px; }
   .ctl { width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer; font-size: 13px;
     background: rgba(255,255,255,.18); color: #fff; backdrop-filter: blur(6px); }
@@ -50,9 +49,9 @@
   .ctl.hang { background: var(--danger); }
   .ctl[hidden] { display: none; }
   .ctl:disabled { opacity: .4; cursor: default; }
-  #playBtn { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: none;
+  #playBtn { z-index: 4; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: none;
     padding: 14px 22px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font-size: 16px; cursor: pointer; }
-  #remoteOff { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  #remoteOff { z-index: 1; position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     color: var(--muted); font-size: 16px; background: #111; }
   @media (max-width: 400px) { #controls { gap: 12px; } .ctl { width: 52px; height: 52px; font-size: 12px; } }
 </style>
@@ -70,15 +69,15 @@
 </div>
 
 <div id="call">
-  <video id="remote" autoplay playsinline></video>
+  <div id="remote"></div>
   <div id="remoteOff">对方关闭了摄像头</div>
   <div id="waiting">
     <div class="big" id="waitText">等待对方加入…</div>
     <div>把房间号告诉对方，或直接发链接</div>
     <button class="ghost" id="copyBtn" type="button">复制邀请链接</button>
   </div>
-  <video id="local" class="mirror" autoplay playsinline muted></video>
-  <button id="playBtn" type="button">点击开启画面和声音</button>
+  <div id="local"></div>
+  <button id="playBtn" type="button">点击开启声音</button>
   <div id="status">房间 <b id="roomLabel"></b><br><span id="statusText">连接中…</span></div>
   <div id="controls">
     <button class="ctl" id="micBtn" type="button">麦克风</button>
@@ -88,60 +87,57 @@
   </div>
 </div>
 
-<script src="peerjs.min.js"></script>
-<script>window.Peer || document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');</script>
+<script src="agora-rtc.min.js"></script>
 <script>
-// 信令：部署了自己的服务器（server/）就用自己的，否则用 PeerJS 公共服务器。
-// 第一个进房间的人占用"房间 ID"当房主；
-// 第二个人先开数据通道问房主"能进吗"，房主回 ok 再打视频电话，回 full 就是满员。
-const PREFIX = 'jjvc-room-';
-let ICE = { iceServers: [
-  { urls: 'stun:stun.miwifi.com:3478' },
-  { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:stun.l.google.com:19302' },
-] };
-let SERVER = {};
-
-// 自己的服务器会返回 config.json（含 TURN 中转的临时密码），每次进房间重新取
-async function loadConfig() {
-  try {
-    const ctl = new AbortController();
-    setTimeout(() => ctl.abort(), 3000);
-    const res = await fetch('config.json', { cache: 'no-store', signal: ctl.signal });
-    const cfg = res.ok && await res.json();
-    if (!cfg || !cfg.selfHosted) return;
-    const secure = location.protocol === 'https:';
-    SERVER = { host: location.hostname, port: Number(location.port) || (secure ? 443 : 80), path: cfg.path || '/peerjs', secure };
-    if (cfg.iceServers && cfg.iceServers.length) ICE = { iceServers: cfg.iceServers };
-  } catch (_) {}
-}
+// 通话走声网（Agora）：国内节点 + 自带中转，5G / 公司网络也能连。
+// 同一个房间号 = 同一个频道；一个房间只允许两个人。
+const APP_ID = '642aee87dccc48e4ba404737d081a9ce';
 
 const $ = id => document.getElementById(id);
-let localStream = null, peer = null, call = null, dataConn = null, partnerId = null;
-let room = '', leaving = false, full = false, retryTimer = null, reserveTimer = null, wakeLock = null;
-let facing = 'user';
+let client = null, mic = null, cam = null, partner = null;
+let room = '', leaving = false, wakeLock = null, facing = 'user';
 
 function setStatus(t) { $('statusText').textContent = t; }
 function showWaiting(text) { $('waitText').textContent = text; $('waiting').style.display = 'flex'; }
 function hideWaiting() { $('waiting').style.display = 'none'; }
-function hostId(r) { return PREFIX + encodeURIComponent(r).replace(/[^a-zA-Z0-9]/g, '_'); }
-function isHost() { return peer && peer.id === hostId(room); }
 
 // 链接里带房间号：?room=1234
 const urlRoom = new URLSearchParams(location.search).get('room');
 if (urlRoom) $('roomInput').value = urlRoom;
 
-async function getMedia() {
-  const audio = { echoCancellation: true, noiseSuppression: true };
+if (window.AgoraRTC) {
+  AgoraRTC.setLogLevel(3);
+  // 手机浏览器不让自动播放声音时，显示一个按钮让用户点一下
+  AgoraRTC.onAutoplayFailed = () => { $('playBtn').style.display = 'block'; };
+}
+
+// 房间号可能是中文，转成频道名允许的字符（字母数字，64 字节以内）
+async function channelName(r) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('jjvc:' + r));
+  return 'r' + [...new Uint8Array(buf)].slice(0, 20).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function mediaError(err) {
+  const code = err && (err.code || err.name);
+  if (code === 'PERMISSION_DENIED' || code === 'NotAllowedError') return '摄像头/麦克风权限被拒绝，请在浏览器设置里允许后重试';
+  if (code === 'DEVICE_NOT_FOUND' || code === 'NotFoundError') return '没有找到摄像头或麦克风';
+  if (code === 'NOT_READABLE' || code === 'NotReadableError') return '摄像头或麦克风被别的应用占用了，请关掉后重试';
+  return '无法打开摄像头/麦克风：' + ((err && err.message) || code);
+}
+
+async function openMedia() {
+  const audioCfg = { AEC: true, ANS: true };
   try {
-    return await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio });
+    [mic, cam] = await AgoraRTC.createMicrophoneAndCameraTracks(audioCfg,
+      { facingMode: 'user', encoderConfig: '720p_1', optimizationMode: 'motion' });
   } catch (err) {
-    // 没有摄像头或摄像头被占用时，退回纯语音
-    if (['NotFoundError', 'NotReadableError', 'OverconstrainedError', 'AbortError'].includes(err.name)) {
-      return await navigator.mediaDevices.getUserMedia({ audio });
+    // 没有摄像头或摄像头被占用：退回纯语音
+    if (['DEVICE_NOT_FOUND', 'NOT_READABLE', 'NotFoundError', 'NotReadableError'].includes(err && (err.code || err.name))) {
+      mic = await AgoraRTC.createMicrophoneAudioTrack(audioCfg);
+      cam = null;
+    } else {
+      throw err;
     }
-    throw err;
   }
 }
 
@@ -149,368 +145,238 @@ $('joinForm').addEventListener('submit', async e => {
   e.preventDefault();
   room = $('roomInput').value.trim();
   if (!room) return;
+  const err = msg => { $('joinBtn').disabled = false; $('lobbyErr').textContent = msg; };
   $('joinBtn').disabled = true;
   $('lobbyErr').textContent = '';
-  if (!window.isSecureContext || !navigator.mediaDevices) {
-    $('joinBtn').disabled = false;
-    $('lobbyErr').textContent = '需要用 https 打开网页才能使用摄像头';
-    return;
-  }
+  if (!window.AgoraRTC) return err('通话组件没有加载出来，请检查网络后刷新页面');
+  if (!window.isSecureContext) return err('需要用 https 打开网页才能使用摄像头');
+  if (!AgoraRTC.checkSystemRequirements()) return err('这个浏览器不支持视频通话，请换 Chrome / Safari，或在微信里用浏览器打开');
   try {
-    localStream = await getMedia();
-  } catch (err) {
-    $('joinBtn').disabled = false;
-    $('lobbyErr').textContent = err.name === 'NotAllowedError'
-      ? '摄像头/麦克风权限被拒绝，请在浏览器设置里允许后重试'
-      : '无法打开摄像头/麦克风：' + (err.message || err.name);
-    return;
+    await openMedia();
+  } catch (e2) {
+    return err(mediaError(e2));
   }
-  await loadConfig();
   history.replaceState(null, '', '?room=' + encodeURIComponent(room));
-  facing = 'user';
-  $('local').srcObject = localStream;
-  $('local').classList.add('mirror');
-  const hasVideo = localStream.getVideoTracks().length > 0;
-  $('camBtn').disabled = !hasVideo;
-  $('local').style.display = hasVideo ? '' : 'none';
-  updateFlipBtn();
+  leaving = false; partner = null; facing = 'user';
   $('roomLabel').textContent = room;
   $('lobby').style.display = 'none';
   $('call').style.display = 'block';
-  leaving = false; full = false;
+  $('camBtn').disabled = !cam;
+  $('local').style.display = cam ? '' : 'none';
+  if (cam) cam.play('local', { mirror: true, fit: 'cover' });
+  updateFlipBtn();
   keepAwake();
-  join();
+  joinChannel();
 });
 
-// ---------- 建立连接 ----------
+// ---------- 进房间 ----------
 
-function join() {
-  clearTimeout(retryTimer);
-  if (leaving || full) return;
+async function joinChannel() {
   setStatus('连接中…');
   showWaiting('连接中…');
-  // 先尝试做房主
-  const p = new Peer(hostId(room), { ...SERVER, config: ICE });
-  let opened = false;
-  peer = p;
-  p.on('open', () => {
-    opened = true;
+  client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+  bindClient(client);
+  try {
+    await client.join(APP_ID, await channelName(room), null, null);
+  } catch (err) {
+    if (leaving) return;
+    console.warn(err);
+    const msg = String(err && err.message || '');
+    if (/static key|invalid vendor key|invalid token|token/i.test(msg)) {
+      setStatus('通话服务配置有误（App 证书需要关闭）');
+      showWaiting('暂时无法进入房间');
+    } else {
+      setStatus('连不上通话服务器，请检查网络后重新进入');
+      showWaiting('连接失败');
+    }
+    return;
+  }
+  if (leaving) return;
+  // 稍等一下，让房间里已有的人都报到
+  await new Promise(r => setTimeout(r, 600));
+  if (leaving) return;
+  if (client.remoteUsers.length >= 2) {
+    // 已经有两个人在通话
+    const c = client; client = null;
+    await c.leave().catch(() => {});
+    setStatus('房间已满，请换一个房间号');
+    showWaiting('房间已满（已经有两个人在通话）');
+    return;
+  }
+  const tracks = [mic, cam].filter(Boolean);
+  try {
+    await client.publish(tracks);
+  } catch (err) {
+    console.warn(err);
+    setStatus('发送画面失败，请挂断后重新进入');
+    return;
+  }
+  if (!partner && client.remoteUsers[0]) partner = client.remoteUsers[0].uid;
+  if (!partner) {
     setStatus('已进入房间，等待对方');
     showWaiting('等待对方加入…');
-  });
-  p.on('connection', conn => {
-    conn.on('open', async () => {
-      if (p !== peer) return conn.close();
-      if (partnerId && partnerId !== conn.peer) {
-        const alive = await partnerAlive();
-        if (p !== peer) return conn.close();
-        if (alive && partnerId) {
-          conn.send({ t: 'full' });
-          setTimeout(() => conn.close(), 1000);
-          return;
-        }
-        // 原来那个人其实已经掉线了（比如断网后刷新），把位置让给新来的
-        if (partnerId) resetCall();
-      }
-      partnerId = conn.peer;
-      bindData(conn);
-      conn.send({ t: 'ok' });
-      // 对方 20 秒内没接通视频，就释放名额
-      clearTimeout(reserveTimer);
-      reserveTimer = setTimeout(() => {
-        if (dataConn === conn && !(call && call.gotStream)) onRemoteLeft();
-      }, 20000);
-    });
-  });
-  p.on('call', incoming => {
-    if (p !== peer || incoming.peer !== partnerId || call) { incoming.close(); return; }
-    incoming.answer(localStream);
-    attach(incoming);
-  });
-  p.on('error', err => {
-    if (p !== peer) return;
-    if (err.type === 'unavailable-id' && !opened) {
-      // 房间里已经有人：用随机 ID 连过去
-      peer = null;
-      p.destroy();
-      joinAsGuest();
-    } else if (err.type === 'unavailable-id') {
-      // 和服务器断线重连时房间 ID 还没释放；通话本身不受影响，稍后再试
-      setTimeout(() => { if (p === peer && p.disconnected && !p.destroyed) p.reconnect(); }, 3000);
-    } else {
-      handleError(err);
-    }
-  });
-  p.on('disconnected', () => {
-    // 和信令服务器断开不影响已建立的通话，只是重连一下
-    if (p === peer && !leaving) setTimeout(() => { if (p === peer && p.disconnected && !p.destroyed) p.reconnect(); }, 1000);
-  });
-}
-
-function joinAsGuest() {
-  if (leaving || full) return;
-  const p = new Peer({ ...SERVER, config: ICE });
-  peer = p;
-  p.on('open', () => {
-    if (p !== peer) return;
-    setStatus('正在呼叫对方…');
-    const conn = p.connect(hostId(room), { reliable: true });
-    bindData(conn);
-    // 对方没响应时，过一会儿重新来过
-    clearTimeout(retryTimer);
-    retryTimer = setTimeout(() => {
-      if (p === peer && !(call && call.gotStream)) { setStatus('对方没有响应，重试中…'); restart(); }
-    }, 15000);
-  });
-  p.on('error', err => {
-    if (p !== peer) return;
-    // 房主刚好离开：重新进入，自己做房主
-    if (err.type === 'peer-unavailable') restart();
-    else handleError(err);
-  });
-}
-
-// 有新的人来时，先问一下现在的对方还在不在（对方崩溃/断网时连接状态要过好几秒才变）
-let pongWaiter = null;
-function partnerAlive() {
-  const pc = call && call.peerConnection;
-  if (!pc) return Promise.resolve(true); // 刚分配名额、视频还没开始打，算占用（20 秒后自动释放）
-  if (['disconnected', 'failed', 'closed'].includes(pc.iceConnectionState)) return Promise.resolve(false);
-  if (!dataConn || !dataConn.open) return Promise.resolve(false);
-  return new Promise(resolve => {
-    const t = setTimeout(() => { pongWaiter = null; resolve(false); }, 2500);
-    pongWaiter = () => { clearTimeout(t); pongWaiter = null; resolve(true); };
-    sendData({ t: 'ping' });
-  });
-}
-
-function bindData(conn) {
-  dataConn = conn;
-  conn.on('data', msg => {
-    if (conn !== dataConn || !msg) return;
-    if (msg.t === 'ok' && !isHost() && !call) {
-      attach(peer.call(hostId(room), localStream));
-    } else if (msg.t === 'full') {
-      showFull();
-    } else if (msg.t === 'bye') {
-      onRemoteLeft();
-    } else if (msg.t === 'ping') {
-      sendData({ t: 'pong' });
-    } else if (msg.t === 'pong') {
-      if (pongWaiter) pongWaiter();
-    } else if (msg.t === 'state') {
-      showRemoteState(msg);
-    }
-  });
-  conn.on('close', () => { if (conn === dataConn && call && call.gotStream) onRemoteLeft(); });
-}
-
-function sendData(msg) {
-  try { if (dataConn && dataConn.open) dataConn.send(msg); } catch (_) {}
-}
-
-function sendState() {
-  const a = localStream && localStream.getAudioTracks()[0];
-  const v = localStream && localStream.getVideoTracks()[0];
-  sendData({ t: 'state', mic: !!(a && a.enabled), cam: !!(v && v.enabled) });
-}
-
-function attach(c) {
-  call = c;
-  c.on('stream', stream => {
-    if (c !== call || c.gotStream) return;
-    c.gotStream = true;
-    clearTimeout(retryTimer);
-    clearTimeout(reserveTimer);
-    const v = $('remote');
-    v.srcObject = stream;
-    v.play().catch(() => { $('playBtn').style.display = 'block'; });
-    hideWaiting();
-    setStatus('通话中');
-    sendState();
-  });
-  c.on('close', () => { if (c === call) onRemoteLeft(); });
-  c.on('error', () => { if (c === call) onRemoteLeft(); });
-  // 检测网络断开（对方直接关网页、断网时不一定会有 close 事件）
-  const watch = () => {
-    if (c !== call) return;
-    const pc = c.peerConnection;
-    if (!pc) return setTimeout(watch, 300);
-    pc.addEventListener('iceconnectionstatechange', () => {
-      const s = pc.iceConnectionState;
-      if (c !== call) return;
-      if (s === 'failed') {
-        onRemoteLeft('连接失败（可能是网络限制），重试中…');
-      } else if (s === 'disconnected') {
-        setStatus('网络不稳定…');
-        setTimeout(() => { if (c === call && pc.iceConnectionState === 'disconnected') onRemoteLeft(); }, 6000);
-      } else if ((s === 'connected' || s === 'completed') && c.gotStream) {
-        setStatus('通话中');
-      }
-    });
-  };
-  watch();
-}
-
-function resetCall() {
-  clearTimeout(retryTimer);
-  clearTimeout(reserveTimer);
-  const c = call, d = dataConn;
-  call = null; dataConn = null; partnerId = null;
-  try { if (c) c.close(); } catch (_) {}
-  try { if (d) d.close(); } catch (_) {}
-  $('remote').srcObject = null;
-  $('remoteOff').style.display = 'none';
-  $('playBtn').style.display = 'none';
-}
-
-function onRemoteLeft(text) {
-  if (leaving || full) return;
-  const host = isHost() && !peer.destroyed;
-  resetCall();
-  showWaiting('对方已离开，等待重新加入…');
-  if (host) {
-    // 自己是房主：保留房间，继续等
-    setStatus(text || '已进入房间，等待对方');
   } else {
-    setStatus(text || '重新进入房间…');
-    restart();
+    setStatus('对方已在房间，正在连接…');
   }
 }
 
-function restart() {
-  resetCall();
-  if (peer) { const p = peer; peer = null; p.destroy(); }
-  // 稍等一下，让服务器释放旧的房间 ID；随机延迟避免两边同时抢
-  retryTimer = setTimeout(join, 1500 + Math.random() * 1500);
+function bindClient(c) {
+  c.on('user-joined', user => {
+    if (c !== client) return;
+    if (!partner) {
+      partner = user.uid;
+      setStatus('对方已进入，正在连接…');
+    }
+  });
+  c.on('user-published', async (user, type) => {
+    if (c !== client) return;
+    if (!partner) partner = user.uid;
+    if (user.uid !== partner) return; // 第三个人（他自己会发现满员退出）
+    try { await c.subscribe(user, type); } catch (err) { console.warn(err); return; }
+    if (type === 'video') {
+      user.videoTrack.play('remote', { fit: 'cover' });
+      $('remoteOff').style.display = 'none';
+      hideWaiting();
+      setStatus('通话中');
+    } else {
+      user.audioTrack.play();
+      if (!user.hasVideo) {
+        // 对方是纯语音
+        hideWaiting();
+        $('remoteOff').textContent = '对方没有打开摄像头';
+        $('remoteOff').style.display = 'flex';
+        setStatus('通话中');
+      }
+    }
+  });
+  c.on('user-unpublished', (user, type) => {
+    if (c !== client || user.uid !== partner) return;
+    if (type === 'video') {
+      $('remoteOff').textContent = '对方关闭了摄像头';
+      $('remoteOff').style.display = 'flex';
+    }
+  });
+  c.on('user-info-updated', (uid, msg) => {
+    if (c !== client || uid !== partner) return;
+    if (msg === 'mute-audio') setStatus('通话中 · 对方已静音');
+    if (msg === 'unmute-audio') setStatus('通话中');
+    if (msg === 'mute-video') { $('remoteOff').textContent = '对方关闭了摄像头'; $('remoteOff').style.display = 'flex'; }
+    if (msg === 'unmute-video') $('remoteOff').style.display = 'none';
+  });
+  c.on('user-left', user => {
+    if (c !== client || user.uid !== partner) return;
+    partner = null;
+    $('remoteOff').style.display = 'none';
+    $('remote').innerHTML = '';
+    // 房间里如果还有别人（刚才满员时进来的），接着跟他通话
+    const next = c.remoteUsers.find(u => u.uid !== user.uid);
+    if (next) {
+      partner = next.uid;
+      resubscribe(c, next);
+    }
+    setStatus('已进入房间，等待对方');
+    showWaiting('对方已离开，等待重新加入…');
+  });
+  c.on('connection-state-change', (cur, prev, reason) => {
+    if (c !== client || leaving) return;
+    if (cur === 'RECONNECTING') setStatus('网络不稳定，正在重连…');
+    if (cur === 'CONNECTED' && prev === 'RECONNECTING') setStatus(partner ? '通话中' : '已进入房间，等待对方');
+    if (cur === 'DISCONNECTED' && reason && reason !== 'LEAVE') {
+      setStatus('与服务器断开，请挂断后重新进入');
+      showWaiting('连接已断开');
+    }
+  });
 }
 
-function showFull() {
-  full = true;
-  resetCall();
-  if (peer) { const p = peer; peer = null; p.destroy(); }
-  showWaiting('房间已满（已经有两个人在通话）');
-  setStatus('房间已满，请换一个房间号');
-}
-
-function handleError(err) {
-  console.warn(err);
-  const msg = {
-    'network': '连不上信令服务器，检查网络',
-    'server-error': '信令服务器出错',
-    'socket-error': '连不上信令服务器',
-    'socket-closed': '与服务器的连接断开',
-    'browser-incompatible': '这个浏览器不支持视频通话，请换 Chrome / Safari',
-  }[err.type] || ('出错了：' + err.type);
-  if (err.type === 'browser-incompatible') { setStatus(msg); return; }
-  // 已经在通话中就不打断，信令断开不影响视频
-  if (call && call.gotStream) return;
-  setStatus(msg + '，重试中…');
-  clearTimeout(retryTimer);
-  retryTimer = setTimeout(restart, 3000);
-}
-
-function showRemoteState(s) {
-  $('remoteOff').style.display = s.cam ? 'none' : 'flex';
-  if (call && call.gotStream) setStatus(s.mic ? '通话中' : '通话中 · 对方已静音');
+async function resubscribe(c, user) {
+  for (const type of ['audio', 'video']) {
+    if (type === 'video' ? user.hasVideo : user.hasAudio) {
+      try {
+        await c.subscribe(user, type);
+        if (type === 'video') { user.videoTrack.play('remote', { fit: 'cover' }); hideWaiting(); }
+        else user.audioTrack.play();
+        setStatus('通话中');
+      } catch (_) {}
+    }
+  }
 }
 
 // ---------- 按钮 ----------
 
-$('micBtn').onclick = () => {
-  const t = localStream.getAudioTracks()[0]; if (!t) return;
-  t.enabled = !t.enabled; $('micBtn').classList.toggle('off', !t.enabled);
-  $('micBtn').textContent = t.enabled ? '麦克风' : '已静音';
-  sendState();
+$('micBtn').onclick = async () => {
+  if (!mic) return;
+  const off = !mic.muted;
+  await mic.setMuted(off);
+  $('micBtn').classList.toggle('off', off);
+  $('micBtn').textContent = off ? '已静音' : '麦克风';
 };
 
-$('camBtn').onclick = () => {
-  const t = localStream.getVideoTracks()[0]; if (!t) return;
-  t.enabled = !t.enabled; $('camBtn').classList.toggle('off', !t.enabled);
-  $('camBtn').textContent = t.enabled ? '摄像头' : '已关闭';
-  sendState();
+$('camBtn').onclick = async () => {
+  if (!cam) return;
+  const off = !cam.muted;
+  await cam.setMuted(off);
+  $('camBtn').classList.toggle('off', off);
+  $('camBtn').textContent = off ? '已关闭' : '摄像头';
 };
 
 async function updateFlipBtn() {
   let n = 0;
-  try { n = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput').length; } catch (_) {}
-  $('flipBtn').hidden = !(localStream && localStream.getVideoTracks().length && n > 1);
-}
-if (navigator.mediaDevices) navigator.mediaDevices.addEventListener('devicechange', updateFlipBtn);
-
-async function openCamera(constraints) {
-  const s = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
-  return s.getVideoTracks()[0];
+  try { n = (await AgoraRTC.getCameras()).length; } catch (_) {}
+  $('flipBtn').hidden = !(cam && n > 1);
 }
 
-// 前后摄像头切换：手机上按 facingMode 切；电脑上有多个摄像头就轮流切
+function camDeviceId() {
+  try { return cam.getMediaStreamTrack().getSettings().deviceId; } catch (_) { return ''; }
+}
+
+// 前后摄像头切换：手机上按前置/后置切；电脑上有多个摄像头就轮流切
 $('flipBtn').onclick = async () => {
   const btn = $('flipBtn');
-  const old = localStream.getVideoTracks()[0];
-  if (!old || btn.disabled) return;
+  if (!cam || btn.disabled) return;
   btn.disabled = true;
-  const enabled = old.enabled;
-  const oldId = old.getSettings().deviceId;
-  const sender = call && call.peerConnection &&
-    call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-  const size = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  const before = camDeviceId();
   const next = facing === 'user' ? 'environment' : 'user';
-  // iOS 等设备不能同时开两个摄像头，先关旧的
-  old.stop();
-  let track = null;
+  let ok = false;
   try {
-    track = await openCamera({ ...size, facingMode: { exact: next } });
-    // 部分设备不认 facingMode，打开的还是同一个摄像头
-    if (track.getSettings().deviceId && track.getSettings().deviceId === oldId) { track.stop(); track = null; }
+    await cam.setDevice({ facingMode: next });
+    ok = camDeviceId() !== before;
   } catch (_) {}
-  if (!track) {
+  if (!ok) {
     try {
-      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-      const i = cams.findIndex(d => d.deviceId === oldId);
+      const cams = await AgoraRTC.getCameras();
+      const i = cams.findIndex(d => d.deviceId === before);
       const target = cams[(i + 1) % cams.length];
-      track = await openCamera({ ...size, deviceId: { exact: target.deviceId } });
+      if (target && target.deviceId !== before) { await cam.setDevice(target.deviceId); ok = true; }
     } catch (_) {}
   }
-  if (!track) {
-    // 切换失败，恢复原摄像头
-    try { track = await openCamera({ ...size, deviceId: oldId ? { exact: oldId } : undefined }); } catch (_) {}
-  }
-  if (track) {
-    track.enabled = enabled;
-    localStream.removeTrack(old);
-    localStream.addTrack(track);
-    const f = track.getSettings().facingMode;
-    facing = f || (facing === 'user' ? 'environment' : 'user');
-    $('local').classList.toggle('mirror', facing !== 'environment');
-    $('local').srcObject = localStream;
-    const cur = call && call.peerConnection &&
-      call.peerConnection.getSenders().find(s => s.track ? s.track.kind === 'video' : s === sender);
-    if (cur) { try { await cur.replaceTrack(track); } catch (e) { console.warn(e); } }
+  if (ok) {
+    facing = next;
+    // 后置摄像头不镜像
+    cam.stop();
+    cam.play('local', { mirror: facing !== 'environment', fit: 'cover' });
   } else {
-    setStatus('切换摄像头失败');
+    setStatus('这台设备无法切换摄像头');
   }
   btn.disabled = false;
 };
 
 $('playBtn').onclick = () => {
-  $('remote').play().then(() => { $('playBtn').style.display = 'none'; }).catch(() => {});
+  $('playBtn').style.display = 'none';
+  if (client) client.remoteUsers.forEach(u => { if (u.audioTrack) u.audioTrack.play(); });
 };
 
-function leaveRoom() {
+async function leaveRoom() {
   leaving = true;
-  sendData({ t: 'bye' });
-  clearTimeout(retryTimer);
-  clearTimeout(reserveTimer);
-  const p = peer, c = call;
-  call = dataConn = peer = partnerId = null;
-  // 留一点时间把 bye 发出去
-  setTimeout(() => { try { if (c) c.close(); } catch (_) {} if (p) p.destroy(); }, 300);
+  const c = client; client = null; partner = null;
+  [mic, cam].forEach(t => { if (t) { t.stop(); t.close(); } });
+  mic = cam = null;
+  if (c) await c.leave().catch(() => {});
 }
 
 $('hangBtn').onclick = () => {
   leaveRoom();
-  localStream.getTracks().forEach(t => t.stop());
-  $('remote').srcObject = $('local').srcObject = null;
+  $('remote').innerHTML = '';
+  $('local').innerHTML = '';
   $('remoteOff').style.display = 'none';
   $('playBtn').style.display = 'none';
   $('call').style.display = 'none';
@@ -533,13 +399,10 @@ async function keepAwake() {
   try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && localStream && !leaving && $('call').style.display === 'block') keepAwake();
+  if (document.visibilityState === 'visible' && client && !leaving) keepAwake();
 });
 
-window.addEventListener('pagehide', () => {
-  sendData({ t: 'bye' });
-  if (peer) peer.destroy();
-});
+window.addEventListener('pagehide', () => { if (client) client.leave(); });
 </script>
 </body>
 </html>
