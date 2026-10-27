@@ -87,7 +87,7 @@ def test_monitor_interface_and_health(context):
     main, client=context
     assert 'id="monitorPanel"' in client.get('/').text
     assert 'id="monitorForm"' in client.get('/').text
-    assert client.get('/api/health').json()['version']=='4.0.0'
+    assert client.get('/api/health').json()['version']=='4.1.0'
 
 
 def test_background_scheduler_processes_created_due_monitor(context, monkeypatch):

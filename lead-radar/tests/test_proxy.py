@@ -172,15 +172,28 @@ def test_auto_route_switches_when_proxy_breaks_douyin(monkeypatch, tmp_path, sys
     assert [k for k, _ in launched] == [('system', None)]
 
 
-def test_falls_back_to_system_edge_with_separate_profile(monkeypatch, tmp_path, system_proxy):
+def test_route_fallback_never_switches_browser_or_profile(monkeypatch, tmp_path, system_proxy):
+    """3.3 bug "登录了又没了": a failing route made collection switch to Edge, whose profile folder
+    has no login. Only the proxy handling may change; browser and profile stay the same."""
     monkeypatch.delenv('BROWSER_PROXY', raising=False); monkeypatch.delenv('BROWSER_CHANNEL', raising=False)
+    monkeypatch.setattr(b, 'find_browser', lambda c: '')   # no Edge/Chrome: bundled Chromium is chosen
     system_proxy({})
     launched, visits = [], []
     profile = tmp_path / 'browser_profile'
     pw = _fake_pw({('auto', None), ('system', None), ('direct', None), ('relay', None)}, launched, visits)
-    ctx, desc = b._launch_reachable(pw, profile, 'https://www.douyin.com/')
-    assert ctx.route_key[1] == 'msedge' and 'Edge' in desc
-    assert launched[-1][1].endswith('browser_profile_msedge')
+    b._launch_reachable(pw, profile, 'https://www.douyin.com/')
+    assert {k[1] for k, _ in launched} == {None} and {d for _, d in launched} == {str(profile)}
+
+
+def test_installed_edge_is_chosen_once_and_remembered(monkeypatch, tmp_path):
+    monkeypatch.delenv('BROWSER_CHANNEL', raising=False)
+    monkeypatch.setattr(b, 'find_browser', lambda c: 'C:/Edge/msedge.exe' if c == 'msedge' else '')
+    profile = tmp_path / 'browser_profile'
+    assert b.browser_channel(profile) == 'msedge'
+    monkeypatch.setattr(b, 'find_browser', lambda c: 'C:/x.exe')  # Chrome installed later: keep Edge
+    assert b.browser_channel(profile) == 'msedge'
+    monkeypatch.setenv('BROWSER_CHANNEL', 'chromium')
+    assert b.browser_channel(profile) is None
 
 
 def test_all_routes_fail_reports_tun_hint(monkeypatch, tmp_path, system_proxy):

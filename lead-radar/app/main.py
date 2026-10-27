@@ -34,7 +34,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from .intent import analyze
 from .browser_collector import (
     SUPPORTED as BROWSER_PLATFORMS, LABEL_TO_PLATFORM, canonical_post_url, collect_in_browser,
-    locate_visible_comment, open_login_pages, safe_post_url,
+    locate_visible_comment, open_login_pages, safe_post_url, saved_login_states, browser_channel, BROWSER_NAMES,
 )
 from .adapters import (
     PLATFORM_ENV, PublicItem, demo_items, fetch_github, fetch_hackernews, fetch_platform,
@@ -220,6 +220,7 @@ class SettingsIn(BaseModel):
     blocked_authors: list[str] = Field(default_factory=list, max_length=500)
     hide_sellers: bool = False
     notify_min_score: int = Field(default=80, ge=0, le=100)
+    browser_background: bool = True
 
 
 class TemplateIn(BaseModel):
@@ -332,7 +333,7 @@ def classify(text, **kwargs):
 
 
 SETTING_DEFAULTS = {"buyer_words": [], "seller_words": [], "exclude_words": [], "blocked_authors": [],
-                    "hide_sellers": False, "notify_min_score": 80}
+                    "hide_sellers": False, "notify_min_score": 80, "browser_background": True}
 
 
 def get_settings(session=None):
@@ -853,7 +854,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.1.0", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -895,7 +896,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.0.0", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.1.0", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1110,6 +1111,16 @@ def bulk_items(inp: BulkIn):
 @app.get("/api/settings")
 def read_settings():
     return get_settings()
+
+
+@app.patch("/api/settings")
+def patch_settings(body: dict):
+    """Change single settings (e.g. {"browser_background": false}) without resending the word lists."""
+    current = get_settings()
+    unknown = set(body) - set(current)
+    if unknown:
+        raise HTTPException(422, "未知设置：" + "、".join(sorted(unknown)))
+    return write_settings(SettingsIn(**{**current, **body}))
 
 
 @app.put("/api/settings")
@@ -1383,7 +1394,8 @@ def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts
             try:
                 collect_in_browser(query, browser_selected, DATA_DIR / "browser_profile", event,
                                    max_posts=max_posts, comments_per_post=max_comments,
-                                   login_wait_seconds=90, sort=sort)
+                                   login_wait_seconds=180, sort=sort,
+                                   background=get_settings()["browser_background"])
             finally:
                 BROWSER_EXEC_LOCK.release()
     except Exception as exc:
@@ -1450,7 +1462,7 @@ class BrowserLoginIn(BaseModel):
     platforms: list[str] = Field(min_length=1, max_length=8)
 
 
-LOGIN_JOB = {"status": "idle", "message": ""}
+LOGIN_JOB = {"status": "idle", "message": "", "states": {}}
 
 
 @app.post("/api/browser-login", status_code=202)
@@ -1470,7 +1482,9 @@ def browser_login(inp: BrowserLoginIn, request: Request):
 
     def runner():
         try:
-            open_login_pages(platforms, DATA_DIR / "browser_profile", progress)
+            states = open_login_pages(platforms, DATA_DIR / "browser_profile", progress)
+            if isinstance(states, dict):
+                LOGIN_JOB["states"] = states
         except Exception as exc:
             progress("error", (str(exc) or type(exc).__name__)[:300])
         finally:
@@ -1478,9 +1492,21 @@ def browser_login(inp: BrowserLoginIn, request: Request):
             if LOGIN_JOB["status"] == "running":
                 progress("done", "登录窗口已关闭，登录状态已保存")
 
-    progress("running", "已打开浏览器，请在各标签页登录；完成后关闭浏览器窗口即可")
+    LOGIN_JOB["states"] = {}
+    progress("running", "正在打开浏览器…")
     threading.Thread(target=runner, daemon=True).start()
     return dict(LOGIN_JOB)
+
+
+@app.get("/api/browser-login-state")
+def browser_login_state():
+    """Which platforms the collector browser is signed in to (from the saved cookies on disk)."""
+    profile = DATA_DIR / "browser_profile"
+    busy = BROWSER_EXEC_LOCK.locked()
+    states = {} if busy else saved_login_states(profile)
+    channel = browser_channel(profile) if browser_available() or not busy else None
+    return {"states": states, "busy": busy, "browser": BROWSER_NAMES.get(channel, "浏览器"),
+            "background": get_settings()["browser_background"]}
 
 
 @app.post("/api/network-check")
@@ -1489,7 +1515,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.0.0", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.1.0", build=BUILD_ID, root=str(ROOT))
     return result
 
 
@@ -1599,7 +1625,7 @@ def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, ex
                                max_posts=max_posts, comments_per_post=max_comments,
                                headless=MONITOR_HEADLESS,
                                login_wait_seconds=int(os.getenv("MONITOR_LOGIN_WAIT_SECONDS", "60")),
-                               sort=sort)
+                               sort=sort, background=get_settings()["browser_background"])
         except Exception as exc:
             # Do not hide the failure behind a successful public-source poll.
             for p in browser_selected:

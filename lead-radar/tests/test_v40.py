@@ -391,3 +391,145 @@ def test_launcher_build_list_matches_server():
     ps1 = (ROOT / "start.ps1").read_text(encoding="utf-8-sig")
     files = re.search(r"\$files = (.+)", ps1).group(1)
     assert [f.replace("\\", "/") for f in re.findall(r"'([^']+)'", files)] == list(main.BUILD_FILES)
+
+
+# ---------------------------------------------------------------- 4.0: login in a plain browser
+import sqlite3 as _sqlite3
+import time as _time
+
+from app import browser_collector as bc
+
+
+def _cookie_profile(tmp_path, cookies):
+    db = tmp_path / "browser_profile" / "Default" / "Network" / "Cookies"
+    db.parent.mkdir(parents=True)
+    con = _sqlite3.connect(db)
+    con.execute("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, expires_utc INTEGER)")
+    future = int((_time.time() + 11644473600 + 86400) * 1_000_000)
+    past = int((_time.time() + 11644473600 - 86400) * 1_000_000)
+    for host, name, ok in cookies:
+        con.execute("INSERT INTO cookies VALUES (?,?,'',x'00',?)", (host, name, future if ok else past))
+    con.commit(); con.close()
+    return tmp_path / "browser_profile"
+
+
+def test_login_states_from_cookie_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(bc, "find_browser", lambda c: "")
+    monkeypatch.delenv("BROWSER_CHANNEL", raising=False)
+    profile = _cookie_profile(tmp_path, [(".douyin.com", "sessionid", True), (".xiaohongshu.com", "a1", True),
+                                         (".zhihu.com", "z_c0", False)])
+    states = bc.saved_login_states(profile)
+    assert states["douyin"] is True and states["xhs"] is False and states["zhihu"] is False  # expired
+    assert states["weibo"] is None and states["kuaishou"] is None
+
+
+def test_login_states_without_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(bc, "find_browser", lambda c: "")
+    assert bc.saved_login_states(tmp_path / "browser_profile", ["douyin", "weibo"]) == {"douyin": False, "weibo": None}
+
+
+def test_login_state_from_live_cookies():
+    future = _time.time() + 3600
+    assert bc.login_state([{"domain": ".douyin.com", "name": "sessionid", "value": "v", "expires": future}], "douyin")
+    assert bc.login_state([{"domain": ".douyin.com", "name": "ttwid", "value": "v", "expires": future}], "douyin") is False
+    assert bc.login_state([], "weibo") is None
+
+
+def test_proxy_args_for_plain_browser(monkeypatch):
+    import urllib.request
+    monkeypatch.delenv("BROWSER_PROXY", raising=False)
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"http": "http://127.0.0.1:7890"})
+    args = bc._proxy_args("auto")
+    assert args[0] == "--proxy-server=http://127.0.0.1:7890" and ".douyin.com" in args[1] and ";" in args[1]
+    assert bc._proxy_args("direct") == ["--no-proxy-server"]
+
+
+def test_login_window_is_a_plain_browser_and_waits_for_close(monkeypatch, tmp_path):
+    """No automation switches; nothing closed by the program; states reported after close."""
+    monkeypatch.delenv("BROWSER_CHANNEL", raising=False)
+    monkeypatch.delenv("BROWSER_PROXY", raising=False)
+    exe = tmp_path / "msedge.exe"; exe.write_text("")
+    monkeypatch.setattr(bc, "find_browser", lambda c: str(exe) if c == "msedge" else "")
+    profile_dir = tmp_path / "browser_profile"
+    edge_profile = profile_dir.with_name("browser_profile_msedge")
+    (profile_dir.parent / "network_route.json").write_text('{"route": "direct", "channel": "msedge"}')
+    launched = {}
+
+    class Proc:
+        def __init__(self, args, **kw):
+            launched["args"] = args
+            self.t = _time.time()
+        def poll(self):
+            return 0 if _time.time() - self.t > 7 else None
+    monkeypatch.setattr(bc.subprocess, "Popen", Proc)
+    monkeypatch.setattr(bc.time, "sleep", lambda s: None)
+    clock = [1000.0]
+    monkeypatch.setattr(bc.time, "time", lambda: clock.__setitem__(0, clock[0] + 1) or clock[0])
+    monkeypatch.setattr(_time, "time", bc.time.time)
+    statuses = []
+    monkeypatch.setattr(bc, "saved_login_states", lambda d, p: {"douyin": True, "xhs": False})
+    checks = iter([False, True, True])   # not yet open, then open while the person logs in, then closed
+    monkeypatch.setattr(bc, "_profile_open", lambda p: next(checks, False))
+    states = bc.open_login_pages(["douyin", "xhs"], profile_dir, lambda st, m: statuses.append((st, m)))
+    args = launched["args"]
+    assert args[0] == str(exe) and f"--user-data-dir={edge_profile}" in args and "--no-proxy-server" in args
+    assert not any(a.startswith("--enable-automation") or "remote-debugging" in a for a in args)
+    assert args[-2:] == [bc.LOGIN_PAGES["douyin"], bc.LOGIN_PAGES["xhs"]]
+    assert states == {"douyin": True, "xhs": False}
+    assert statuses[-1][0] == "partial" and "已登录：抖音" in statuses[-1][1] and "小红书" in statuses[-1][1]
+
+
+def test_profile_lock_must_really_be_held(tmp_path):
+    import os, socket
+    profile = tmp_path / "p"; profile.mkdir()
+    (profile / "lockfile").write_text("")          # stale Windows lock file, nobody holds it
+    assert not bc._profile_open(profile)
+    os.symlink(f"{socket.gethostname()}-{os.getpid()}", profile / "SingletonLock")
+    assert bc._profile_open(profile)                 # live pid
+    (profile / "SingletonLock").unlink()
+    os.symlink(f"{socket.gethostname()}-999999999", profile / "SingletonLock")
+    assert not bc._profile_open(profile)             # browser gone, lock left behind
+
+
+def test_login_refuses_when_profile_already_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(bc, "find_browser", lambda c: "")
+    monkeypatch.delenv("BROWSER_CHANNEL", raising=False)
+    profile = tmp_path / "browser_profile"; profile.mkdir()
+    monkeypatch.setattr(bc, "_profile_open", lambda p: True)
+    with pytest.raises(RuntimeError, match="已经开着"):
+        bc.open_login_pages(["douyin"], profile, lambda *a: None)
+
+
+def test_collect_skips_platform_that_is_not_logged_in(monkeypatch, tmp_path):
+    events = []
+
+    class Page:
+        def goto(self, *a, **k): raise AssertionError("must not open a login-only page")
+        def evaluate(self, *a, **k): return None
+
+    class Ctx:
+        pages = [Page()]
+        def cookies(self): return [{"domain": ".douyin.com", "name": "ttwid", "value": "x", "expires": -1}]
+        def close(self): pass
+
+    class PWCM:
+        def __enter__(self): return object()
+        def __exit__(self, *a): return False
+    import playwright.sync_api as sync_api
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: PWCM())
+    monkeypatch.setattr(bc, "_launch_reachable", lambda *a, **k: (Ctx(), "x"))
+    bc.collect_in_browser("GPT", ["douyin"], tmp_path / "p", lambda p, st, b, m: events.append((p, st, m)))
+    assert events[-1][1] == "error" and "还没有登录" in events[-1][2] and "打开浏览器去登录" in events[-1][2]
+
+
+def test_login_state_endpoint_and_background_setting(context, monkeypatch):
+    m, client = context
+    monkeypatch.setattr(m, "saved_login_states", lambda d: {"douyin": True})
+    r = client.get("/api/browser-login-state").json()
+    assert r["states"] == {"douyin": True} and r["background"] is True and not r["busy"]
+    assert client.patch("/api/settings", json={"browser_background": False}).json()["browser_background"] is False
+    assert client.get("/api/browser-login-state").json()["background"] is False
+    assert client.patch("/api/settings", json={"nope": 1}).status_code == 422
+    # saving the intent rules must not reset the browser option
+    client.patch("/api/settings", json={"buyer_words": ["私域"]})
+    assert client.get("/api/settings").json()["browser_background"] is False

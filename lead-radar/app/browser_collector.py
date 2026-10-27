@@ -6,9 +6,16 @@ or promise full-site completeness. Intended for bounded public-content research.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import shutil
 import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -554,21 +561,31 @@ def friendly_net_error(exc) -> str:
     return f"{type(exc).__name__}：{text.splitlines()[0][:180] if text else ''}"
 
 
+OFFSCREEN = "--window-position=-32000,-32000"
+
+
 def _launch(pw, profile_dir: Path, headless: bool = False, route: str | None = None,
-            channel: str | None = None, **kwargs):
+            channel: str | None = None, background: bool = False, **kwargs):
     """Persistent browser profile. Uses Playwright's Chromium when installed and
     falls back to the Edge/Chrome already on the computer (Edge ships with Windows),
     so a failed Chromium download doesn't block collection. BROWSER_CHANNEL=msedge|chrome forces one.
     `channel` launches exactly that browser; `route` picks the proxy handling (see proxy_settings)."""
     proxy_opts, _ = proxy_settings(route)
     extra_args = list(kwargs.pop("args", [])) + list(proxy_opts.get("args", []))
+    if background and not headless:
+        # Collect in a window parked off-screen: it doesn't jump in front of what you are doing.
+        # It is moved on-screen only when a login/verification needs a human (see _show_window).
+        extra_args.append(OFFSCREEN)
     options = dict(user_data_dir=str(profile_dir), headless=headless,
                    viewport={"width": 1330, "height": 880}, locale="zh-CN", **kwargs)
+    if os.getenv("BROWSER_EXECUTABLE", "").strip():
+        options["executable_path"] = os.environ["BROWSER_EXECUTABLE"].strip()
     if extra_args:
         options["args"] = extra_args
     if "proxy" in proxy_opts:
         options["proxy"] = proxy_opts["proxy"]
-    forced = channel or os.getenv("BROWSER_CHANNEL", "").strip()
+    env = os.getenv("BROWSER_CHANNEL", "").strip().lower()
+    forced = channel or ("" if env in ("", "chromium", "none", "default") else env)
     channels = [forced] if forced else [None, "msedge", "chrome"]
     last_error = None
     for channel in channels:
@@ -603,6 +620,67 @@ def _route_file(profile_dir: Path) -> Path:
     return profile_dir.parent / "network_route.json"
 
 
+# ---------------------------------------------------------------- which browser
+# 3.3 bug ("登录了又没了"): when one network route failed, collection could switch from
+# Chromium to Edge, whose profile folder is a different one without the login. Now a single
+# browser is chosen once, remembered in data/browser.json, and used for login and collection.
+def _windows_paths(*rel):
+    roots = [os.environ.get(k, "") for k in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA")]
+    return [os.path.join(r, *rel) for r in roots if r]
+
+
+BROWSER_PATHS = {
+    "msedge": _windows_paths("Microsoft", "Edge", "Application", "msedge.exe") +
+              ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+    "chrome": _windows_paths("Google", "Chrome", "Application", "chrome.exe") +
+              ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+}
+BROWSER_COMMANDS = {"msedge": ("microsoft-edge", "microsoft-edge-stable"), "chrome": ("google-chrome", "google-chrome-stable")}
+BROWSER_NAMES = {"msedge": "电脑自带的 Edge", "chrome": "电脑上的 Chrome", None: "程序自带的 Chromium"}
+
+
+def find_browser(channel):
+    """Executable of an installed Edge/Chrome, or '' (None = Playwright's Chromium, located later)."""
+    if os.getenv("BROWSER_EXECUTABLE", "").strip():
+        return os.environ["BROWSER_EXECUTABLE"].strip()
+    if channel is None:
+        return ""
+    for path in BROWSER_PATHS.get(channel, []):
+        if os.path.isfile(path):
+            return path
+    for cmd in BROWSER_COMMANDS.get(channel, ()):
+        found = shutil.which(cmd)
+        if found:
+            return found
+    return ""
+
+
+def _browser_file(profile_dir: Path) -> Path:
+    return profile_dir.parent / "browser.json"
+
+
+def browser_channel(profile_dir: Path):
+    """The one browser used for login and collection. BROWSER_CHANNEL=msedge|chrome|chromium forces it.
+    Default: the remembered choice, else Edge (ships with Windows and plays douyin's H.264 video,
+    which Playwright's Chromium cannot), else Chrome, else the bundled Chromium."""
+    forced = os.getenv("BROWSER_CHANNEL", "").strip().lower()
+    if forced:
+        return None if forced in ("chromium", "none", "default") else forced
+    try:
+        saved = json.loads(_browser_file(profile_dir).read_text(encoding="utf-8"))
+        if "channel" in saved and (saved["channel"] is None or find_browser(saved["channel"])):
+            return saved["channel"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    channel = next((c for c in ("msedge", "chrome") if find_browser(c)), None)
+    try:
+        _browser_file(profile_dir).parent.mkdir(parents=True, exist_ok=True)
+        _browser_file(profile_dir).write_text(json.dumps({"channel": channel}), encoding="utf-8")
+    except OSError:
+        pass
+    return channel
+
+
 def _profile_for(profile_dir: Path, channel: str | None) -> Path:
     # The system Edge gets its own profile folder: sharing one with Chromium can corrupt it.
     return profile_dir if not channel else profile_dir.with_name(profile_dir.name + "_" + channel)
@@ -623,8 +701,8 @@ def _route_candidates(profile_dir: Path):
         # DNS still hands out fake addresses (VPN TUN left-overs): only the channel can work
         routes.remove("relay")
         routes.insert(0, "relay")
-    forced = os.getenv("BROWSER_CHANNEL", "").strip()
-    channels = [forced or None] if forced else [None, "msedge"]
+    # Only the proxy handling may change between attempts, never the browser/profile.
+    channels = [browser_channel(profile_dir)]
     combos = [(r, c) for c in channels for r in routes]
     try:
         import json
@@ -657,7 +735,7 @@ def _is_network_error(exc) -> bool:
 
 
 def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
-                      note: Callable[[str], None] | None = None, **kwargs):
+                      note: Callable[[str], None] | None = None, background: bool = False, **kwargs):
     """Launch the collector browser with a network route that can open *every* site in
     `test_urls` (one URL per selected platform: xiaohongshu opening fine says nothing about
     douyin). Only *network* errors such as ERR_CONNECTION_CLOSED count as failures; login
@@ -670,7 +748,8 @@ def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
     tried = []
     for route, channel in _route_candidates(profile_dir):
         try:
-            ctx = _launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel, **kwargs)
+            ctx = _launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel,
+                          background=background, **kwargs)
         except RuntimeError:
             if channel:          # e.g. Edge not installed: just skip this option
                 continue
@@ -702,7 +781,8 @@ def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
     if best is None:
         raise RuntimeError(NO_BROWSER_MSG)
     opened, route, channel, failing = best
-    ctx = _launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel, **kwargs)
+    ctx = _launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel,
+                  background=background, **kwargs)
     if opened:
         _remember_route(profile_dir, route, channel)
     if note:
@@ -773,36 +853,166 @@ def _apply_latest_sort(page, platform: str):
         pass
 
 
-def _wait_until_usable(page, platform, label, on_event, wait_seconds, headless, probe):
-    """Poll `probe()` until it returns rows. If a login/verification wall shows,
-    tell the operator (visible mode) and wait for a human to finish it."""
+def _show_window(page, show: bool):
+    """Bring the collector window on-screen and to the front (show=True) or park it again."""
+    try:
+        cdp = page.context.new_cdp_session(page)
+        win = cdp.send("Browser.getWindowForTarget")["windowId"]
+        if show:
+            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"windowState": "normal"}})
+            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"left": 80, "top": 40, "width": 1330, "height": 880}})
+            page.bring_to_front()
+        else:
+            # back off-screen (where background collection started); minimising isn't honoured everywhere
+            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"windowState": "normal"}})
+            cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"left": -32000, "top": -32000}})
+        cdp.detach()
+        return True
+    except Exception:
+        return False
+
+
+BANNER_JS = r"""([text, warn]) => {
+  let el = document.getElementById('__lead_radar_banner');
+  if (!text) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = '__lead_radar_banner';
+    el.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2147483647;' +
+      'max-width:min(760px,92vw);padding:10px 16px;border-radius:10px;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;' +
+      'box-shadow:0 6px 24px rgba(0,0,0,.25);pointer-events:none;color:#fff';
+    (document.body || document.documentElement).appendChild(el);
+  }
+  el.style.background = warn ? '#b42318' : '#121a2b';
+  el.textContent = text;
+}"""
+
+
+def _banner(page, text: str = "", warn: bool = False):
+    """A note at the bottom of the collector page telling the person what is going on."""
+    try:
+        page.evaluate(BANNER_JS, [text, warn])
+    except Exception:
+        pass
+
+
+AUTO_NOTE = "Lead Radar 正在自动读取这个页面，请不要在这个窗口里点击或输入（会打乱采集）。"
+
+# Cookies that only exist after signing in. Used to skip a platform up front ("未登录") instead
+# of opening it and waiting on a login wall. Only listed where the cookie is a reliable sign;
+# for xiaohongshu web_session may also be issued to guests, so its absence is what counts.
+LOGIN_COOKIES = {
+    "douyin": ("douyin.com", ("sessionid", "sessionid_ss", "sid_guard")),
+    "xhs": ("xiaohongshu.com", ("web_session",)),
+    "zhihu": ("zhihu.com", ("z_c0",)),
+    "bilibili": ("bilibili.com", ("DedeUserID", "SESSDATA")),
+    "tieba": ("baidu.com", ("BDUSS",)),
+    "tiktok": ("tiktok.com", ("sessionid", "sessionid_ss")),
+}
+# Platforms whose search page is unusable without an account.
+LOGIN_REQUIRED = ("douyin", "xhs", "zhihu", "tiktok")
+
+
+def login_state(cookies, platform: str):
+    """True = signed in, False = surely not, None = can't tell from cookies."""
+    if platform not in LOGIN_COOKIES:
+        return None
+    domain, names = LOGIN_COOKIES[platform]
+    now = time.time()
+    for c in cookies:
+        host = str(c.get("domain") or "").lstrip(".").lower()
+        expires = c.get("expires", -1)
+        if (host == domain or host.endswith("." + domain)) and c.get("name") in names and c.get("value", "x") \
+                and (expires in (-1, 0, None) or expires > now):
+            return True
+    return False
+
+
+def _cookie_db(profile_dir: Path):
+    for rel in (("Default", "Network", "Cookies"), ("Default", "Cookies")):
+        path = profile_dir.joinpath(*rel)
+        if path.exists():
+            return path
+    return None
+
+
+def saved_login_states(profile_dir: Path, platforms=None):
+    """Login state per platform read from the browser profile's cookie database on disk (names and
+    expiry only; values stay encrypted and are never read). {} while the browser is open and the
+    file is locked."""
+    channel = browser_channel(profile_dir)
+    db = _cookie_db(_profile_for(profile_dir, channel))
+    platforms = list(platforms or SUPPORTED)
+    if db is None:
+        return {p: (False if p in LOGIN_COOKIES else None) for p in platforms}
+    rows = None
+    for attempt in ("immutable", "copy"):
+        try:
+            if attempt == "immutable":
+                con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro&immutable=1", uri=True)
+            else:
+                tmp = Path(tempfile.mkdtemp()) / "Cookies"
+                shutil.copy2(db, tmp)
+                con = sqlite3.connect(str(tmp))
+            try:
+                rows = con.execute("SELECT host_key, name, expires_utc FROM cookies").fetchall()
+            finally:
+                con.close()
+            break
+        except (sqlite3.Error, OSError):
+            continue
+    if rows is None:
+        return {}
+    cookies = []
+    for host, name, expires_utc in rows:
+        # Chromium stores microseconds since 1601-01-01; 0 = session cookie
+        unix = (expires_utc / 1_000_000 - 11644473600) if expires_utc else -1
+        cookies.append({"domain": host, "name": name, "expires": unix})
+    return {p: login_state(cookies, p) for p in platforms}
+
+
+def _wait_until_usable(page, platform, label, on_event, wait_seconds, headless, probe, background=False):
+    """Poll `probe()` until it returns rows. If a login/verification wall shows, bring the window
+    to the front, say so on the page and in the console, and wait for a human to finish it.
+    The page is never navigated away while the person may be in the middle of it."""
     rows = probe()
     if rows:
         return rows, ""
-    deadline_rounds = max(1, int(wait_seconds) // 3)
+    deadline = time.time() + max(3, int(wait_seconds))
     told = False
-    for _ in range(deadline_rounds):
+    while time.time() < deadline:
         reason = _blocked(page)
         if reason:
             if headless:
                 return [], "平台显示登录/验证页面，无头模式无法处理。请在 .env 设 MONITOR_HEADLESS=0 并在弹出的浏览器里登录一次。"
             if not told:
+                _show_window(page, True)
                 on_event(platform, "waiting_login", [],
-                         f"{label}需要登录或安全验证，请在弹出的浏览器窗口手动完成（最多等待约 {int(wait_seconds)} 秒）。")
+                         f"{label}需要登录或安全验证：浏览器窗口已弹到前面，请在里面手动完成（最多等 {int(wait_seconds)} 秒），完成后自动继续。")
                 told = True
+            _banner(page, f"Lead Radar：{label}需要你登录或完成安全验证，完成后程序自动继续（还剩 {int(deadline - time.time())} 秒）。"
+                          "完成前程序不会动这个页面。", warn=True)
         page.wait_for_timeout(3000)
         rows = probe()
         if rows:
+            if told:
+                _banner(page, AUTO_NOTE)
+                if background:
+                    _show_window(page, False)
             return rows, ""
+        if told and not _blocked(page) and not rows:
+            # the wall is gone (login done) but results aren't rendered yet: give the page a moment
+            page.wait_for_timeout(1500)
+    if told and background:
+        _show_window(page, False)
     reason = _blocked(page)
     if reason:
-        return [], f"{label}停留在登录/验证页面，未完成验证，本轮跳过。"
+        return [], f"{label}停留在登录/验证页面，未完成，本轮跳过。请点「打开浏览器去登录」重新登录一次。"
     return [], ""
 
 
 def locate_visible_comment(platform: str, post_url: str, comment_text: str, author: str,
                            profile_dir: Path, on_status: Callable[[str, str], None],
-                           max_scrolls: int = 20, window_seconds: int = 120, comment_id: str = ""):
+                           max_scrolls: int = 20, window_seconds: int = 600, comment_id: str = ""):
     """User-initiated highlight in their own visible browser, not a direct permalink.
 
     Stops on sign-in/challenge or absent content; doesn't bypass restrictions.
@@ -859,7 +1069,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                        on_event: Callable[[str, str, list[PublicItem], str], None],
                        max_posts: int = 8, comments_per_post: int = 10,
                        headless: bool = False, login_wait_seconds: int = 60,
-                       sort: str = "latest"):
+                       sort: str = "latest", background: bool = False):
     """Open the user's browser profile. Caller owns storage, status & authorization policy.
 
     on_event(platform, state, new_items, message) is invoked after each batch.
@@ -876,15 +1086,26 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
     with sync_playwright() as pw:
         context, route_desc = _launch_reachable(
             pw, profile_dir, _test_url_for(platforms), headless,
-            note=lambda m: on_event(platforms[0], "searching", [], m), args=["--disable-notifications"])
+            note=lambda m: on_event(platforms[0], "searching", [], m), args=["--disable-notifications"],
+            background=background)
         try:
             page = context.pages[0] if context.pages else context.new_page()
+            try:
+                cookies = context.cookies()
+            except Exception:
+                cookies = []
             for platform in platforms:
                 label = SUPPORTED[platform]
+                if platform in LOGIN_REQUIRED and login_state(cookies, platform) is False:
+                    # Don't open a page that can only show a login wall; say what to do instead.
+                    on_event(platform, "error", [], f"{label}还没有登录（采集浏览器里没有{label}的登录信息）。"
+                             "请先点首页「① 打开浏览器去登录」，在弹出的浏览器里登录后关闭窗口，再搜索。")
+                    continue
                 on_event(platform, "searching", [], f"正在打开{label}搜索页（{'最新优先' if sort == 'latest' else '综合排序'}）。")
                 try:
                     page.goto(search_url(platform, keyword, sort), wait_until="domcontentloaded", timeout=45000)
                     page.wait_for_timeout(2500)
+                    _banner(page, AUTO_NOTE)
 
                     def probe():
                         found = {}
@@ -901,7 +1122,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                         return list(found.values())
 
                     posts, blocked_msg = _wait_until_usable(page, platform, label, on_event,
-                                                            login_wait_seconds, headless, probe)
+                                                            login_wait_seconds, headless, probe, background)
                     if blocked_msg:
                         on_event(platform, "error", [], blocked_msg)
                         continue
@@ -909,7 +1130,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                         # Newest-first parameter not honoured by this site version: fall back.
                         page.goto(search_url(platform, keyword, "relevance"), wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_timeout(2500)
-                        posts, blocked_msg = _wait_until_usable(page, platform, label, on_event, 15, headless, probe)
+                        posts, blocked_msg = _wait_until_usable(page, platform, label, on_event, 15, headless, probe, background)
                         if blocked_msg:
                             on_event(platform, "error", [], blocked_msg)
                             continue
@@ -945,12 +1166,17 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                         try:
                             page.goto(url, wait_until="domcontentloaded", timeout=30000)
                             page.wait_for_timeout(2200)
+                            _banner(page, AUTO_NOTE)
                             if _blocked(page) and not headless:
-                                on_event(platform, "waiting_login", [], f"{label}作品页需要登录/验证，请在浏览器中完成。")
-                                for _ in range(max(1, int(login_wait_seconds) // 3)):
-                                    if not _blocked(page):
-                                        break
+                                _show_window(page, True)
+                                on_event(platform, "waiting_login", [], f"{label}作品页需要登录/验证：浏览器窗口已弹到前面，请完成后自动继续。")
+                                end = time.time() + max(3, int(login_wait_seconds))
+                                while time.time() < end and _blocked(page):
+                                    _banner(page, f"Lead Radar：请完成登录/验证，完成后自动继续（还剩 {int(end - time.time())} 秒）", warn=True)
                                     page.wait_for_timeout(3000)
+                                _banner(page, AUTO_NOTE)
+                                if background:
+                                    _show_window(page, False)
                             try:
                                 detail = page.evaluate(METRICS_DOM_JS, platform) or {}
                             except Exception:
@@ -1001,42 +1227,158 @@ LOGIN_PAGES = {
 }
 
 
-def open_login_pages(platforms: list[str], profile_dir: Path, on_status: Callable[[str, str], None],
-                     max_minutes: int = 20):
-    """Open each platform's home/sign-in page in the collector's profile so the user signs
-    in by hand (QR code, SMS...). Cookies stay in profile_dir for later searches."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(NO_BROWSER_MSG) from exc
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as pw:
-        ctx, route_desc = _launch_reachable(pw, profile_dir, _test_url_for(platforms),
-                                            note=lambda m: on_status("running", m))
+def _proxy_args(route):
+    """The same proxy handling as the collector, as command-line switches for a plain browser."""
+    opts, _ = proxy_settings(route)
+    args = list(opts.get("args", []))
+    if "proxy" in opts:
+        args.append("--proxy-server=" + opts["proxy"]["server"])
+        if opts["proxy"].get("bypass"):
+            args.append("--proxy-bypass-list=" + opts["proxy"]["bypass"].replace(",", ";"))
+    return args
+
+
+def _profile_open(profile: Path) -> bool:
+    """Is a browser using this profile right now? The lock files can outlive a crashed or killed
+    browser, so check that the lock is really held, not just that the file exists."""
+    lock = profile / "lockfile"            # Windows: held open exclusively while the browser runs
+    if lock.exists():
         try:
-            first = ctx.pages[0] if ctx.pages else ctx.new_page()
-            failed = []
-            for i, platform in enumerate(platforms):
-                page = first if i == 0 else ctx.new_page()
-                try:
-                    page.goto(LOGIN_PAGES[platform], wait_until="domcontentloaded", timeout=45000)
-                except Exception as exc:  # leave the tab open; the user can retry inside the browser
-                    failed.append(f"{SUPPORTED[platform]}打不开：{friendly_net_error(exc)}")
-            if failed:
-                on_status("running", "；".join(failed) + f"。当前网络方式：{route_desc}。处理后在浏览器里点「重新加载」即可，其他标签页可以照常登录")
-            else:
-                on_status("running", f"已打开 {len(platforms)} 个平台（网络方式：{route_desc}），请逐个标签页登录；全部完成后关闭浏览器窗口")
-            for _ in range(max_minutes * 60):
-                open_pages = [p for p in ctx.pages if not p.is_closed()]
-                if not open_pages:
-                    break
-                open_pages[0].wait_for_timeout(1000)
-            on_status("done", "登录窗口已关闭，登录状态已保存，之后的搜索和监控会自动使用")
-        except Exception:
-            # Closing the whole browser window ends the context; that's the normal finish.
-            on_status("done", "登录窗口已关闭，登录状态已保存，之后的搜索和监控会自动使用")
-        finally:
-            try:
-                ctx.close()
-            except Exception:
+            with open(lock, "a"):
                 pass
+        except PermissionError:
+            return True
+        except OSError:
+            pass
+    link = profile / "SingletonLock"       # Linux/macOS: symlink "<host>-<pid>"
+    if os.path.lexists(link):
+        try:
+            host, _, pid = os.readlink(link).rpartition("-")
+            if host == socket.gethostname():
+                os.kill(int(pid), 0)
+                return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except (OSError, ValueError):
+            return False
+    return False
+
+
+def _probe_route(pw, profile_dir: Path, urls, note=None):
+    """Pick the network route with an invisible throw-away browser (no profile, nothing pops up)."""
+    best = None
+    for route, channel in _route_candidates(profile_dir):
+        proxy_opts, _ = proxy_settings(route)
+        options = {"headless": True, "args": list(proxy_opts.get("args", []))}
+        if "proxy" in proxy_opts:
+            options["proxy"] = proxy_opts["proxy"]
+        if os.getenv("BROWSER_EXECUTABLE", "").strip():
+            options["executable_path"] = os.environ["BROWSER_EXECUTABLE"].strip()
+        elif channel:
+            options["channel"] = channel
+        try:
+            browser = pw.chromium.launch(**options)
+        except Exception:
+            continue
+        failing = []
+        try:
+            page = browser.new_page()
+            for url in urls:
+                try:
+                    page.goto(url, wait_until="commit", timeout=15000)
+                except Exception as exc:
+                    if _is_network_error(exc):
+                        failing.append(urlparse(url).hostname or url)
+        finally:
+            browser.close()
+        if not failing:
+            _remember_route(profile_dir, route, channel)
+            return route
+        if note:
+            note(f"「{describe_route(route, channel)}」打不开 {'、'.join(failing)}，换一种网络方式…")
+        if best is None or len(failing) < best[0]:
+            best = (len(failing), route)
+    return best[1] if best else None
+
+
+def open_login_pages(platforms: list[str], profile_dir: Path, on_status: Callable[[str, str], None],
+                     max_minutes: int = 120):
+    """Open the collector's browser profile as a completely normal browser window — not driven by
+    the program — with one tab per platform, so the person signs in by hand (QR code, SMS ...).
+
+    3.3 used an automation-controlled window here. Douyin and Xiaohongshu treat such windows as
+    bots: QR logins failed or were dropped right after. A plain window logs in like any browser;
+    the login is stored in the profile that searches and monitors use afterwards.
+    Nothing is navigated or closed by the program; it waits until the person closes the window.
+    Returns {platform: True/False/None} login states read after the window is closed."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    channel = browser_channel(profile_dir)
+    profile = _profile_for(profile_dir, channel)
+    profile.mkdir(parents=True, exist_ok=True)
+    if _profile_open(profile):
+        raise RuntimeError("采集浏览器的窗口已经开着（可能在任务栏里）。请直接在那个窗口里登录，或者把它关掉后再点「打开浏览器去登录」。")
+    urls = [LOGIN_PAGES[p] for p in platforms if p in LOGIN_PAGES]
+    exe = find_browser(channel)
+    saved = {}
+    try:
+        saved = json.loads(_route_file(profile_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    env = os.getenv("BROWSER_PROXY", "auto").strip().lower()
+    known = env not in ("", "auto") or (saved.get("channel") == channel and saved.get("route"))
+    route = None if env not in ("", "auto") else (saved.get("route") if known else None)
+    if not exe or not known:
+        # Playwright is only needed to find its own Chromium or to test routes invisibly.
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                if not exe:
+                    exe = pw.chromium.executable_path
+                if not known:
+                    on_status("running", "正在检测网络（不会弹出窗口）…")
+                    route = _probe_route(pw, profile_dir, _test_url_for(platforms),
+                                         note=lambda m: on_status("running", m))
+        except ImportError:
+            if not exe:
+                raise RuntimeError(NO_BROWSER_MSG)
+    if not exe or not os.path.exists(exe):
+        raise RuntimeError(NO_BROWSER_MSG + "（也没有找到 Edge/Chrome）")
+    args = [exe, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
+            "--disable-background-mode", "--new-window", *_proxy_args(route)]
+    if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        args.append("--no-sandbox")   # Chromium refuses to run as root otherwise (servers / containers)
+    proc = subprocess.Popen(args + urls, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            close_fds=True)
+    names = "、".join(SUPPORTED[p] for p in platforms)
+    on_status("running", f"已用{BROWSER_NAMES.get(channel, '浏览器')}打开 {names}（网络方式：{describe_route(route, channel)}）。"
+                         "请在每个标签页扫码/输入验证码登录，看到自己的头像就是登录好了；全部登录完后关闭这个浏览器窗口。")
+    started = time.time()
+    seen_open = False   # the browser really ran with this profile (vs. failed to start)
+    while time.time() - started < max_minutes * 60:
+        time.sleep(2)
+        is_open = _profile_open(profile)
+        seen_open = seen_open or is_open
+        if proc.poll() is None or is_open:
+            continue
+        if not seen_open:
+            raise RuntimeError("浏览器没能打开（启动后马上退出了）。请关闭其他「Lead Radar」浏览器窗口后重试；"
+                               "如果还不行，在 .env 里设置 BROWSER_CHANNEL=chromium 改用程序自带的浏览器。")
+        break
+    else:
+        on_status("running", "登录窗口已经开了很久，程序不再等待；你可以继续在里面操作，关掉后再搜索。")
+    time.sleep(1)  # let the browser finish writing its cookie database
+    states = saved_login_states(profile_dir, platforms)
+    ok = [SUPPORTED[p] for p in platforms if states.get(p) is True]
+    missing = [SUPPORTED[p] for p in platforms if states.get(p) is False]
+    unknown = [SUPPORTED[p] for p in platforms if states.get(p) is None]
+    parts = []
+    if ok:
+        parts.append("已登录：" + "、".join(ok))
+    if missing:
+        parts.append("没有检测到登录：" + "、".join(missing) + "（请再点一次登录，扫码后等页面显示头像再关窗口）")
+    if unknown:
+        parts.append("无法自动判断：" + "、".join(unknown) + "（以浏览器里是否显示头像为准）")
+    on_status("done" if not missing else "partial", "登录窗口已关闭。" + "；".join(parts))
+    return states

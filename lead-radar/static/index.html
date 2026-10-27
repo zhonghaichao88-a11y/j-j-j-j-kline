@@ -153,7 +153,7 @@ details.tool>.tool-body{padding:0 20px 18px}
 </head>
 <body>
 <header class="top"><div class="top-inner">
- <div class="brand">LEAD RADAR<small>4.0 · 全网关键词获客 · 买家识别 · 跟进管理</small></div>
+ <div class="brand">LEAD RADAR<small>4.1 · 全网关键词获客 · 买家识别 · 跟进管理</small></div>
  <div class="pills" id="metrics"></div>
 </div></header>
 <nav class="tabs"><div class="tabs-inner" role="tablist">
@@ -177,10 +177,12 @@ details.tool>.tool-body{padding:0 20px 18px}
  <div class="card" id="loginCard">
   <div class="step"><div class="step-no">1</div><div class="step-body">
    <h2>登录平台（首次使用做一次就行）</h2>
-   <p class="desc">小红书、抖音、微博、知乎等要登录才能搜索。点下面的按钮会在电脑上弹出浏览器，在每个标签页扫码登录，完成后关掉浏览器窗口即可，登录状态会保存下来。B站不登录也能用。</p>
+   <p class="desc">小红书、抖音、知乎、TikTok 必须登录才能搜索（B站不用）。点「打开浏览器去登录」会弹出一个<b>普通浏览器窗口</b>（程序不会控制它，不会自己跳转或关闭），在每个标签页用手机扫码登录，<b>看到自己的头像</b>后关掉整个浏览器窗口，下面就会显示登录结果。</p>
    <div class="chips" id="loginPlatforms"></div>
+   <div class="row small" id="loginStates" style="margin-top:10px;gap:6px"></div>
    <div class="actions-main"><button class="btn" id="loginButton" type="button">🔑 打开浏览器去登录</button><button class="btn ghost" id="netCheckButton" type="button">🩺 打不开？网络诊断</button><span class="muted small" id="loginStatus"></span></div>
    <div id="netResult" hidden style="margin-top:14px"></div>
+   <label class="chip" style="margin-top:12px;display:inline-block" title="关掉后，采集时浏览器窗口会一直显示在前面"><input type="checkbox" id="bgBrowser"><span>搜索/监控时浏览器在后台运行（不挡你干活；需要你登录或验证时才自动弹到前面）</span></label>
    <div class="hint bad" id="browserMissing" hidden style="margin-top:12px">还没装好浏览器组件：请关闭程序窗口，重新双击 <b>start.bat</b>，它会自动安装（装不上时会改用电脑自带的 Edge）。</div>
   </div></div>
  </div>
@@ -192,6 +194,7 @@ details.tool>.tool-body{padding:0 20px 18px}
    <input id="keyword" class="big-input" maxlength="100" required placeholder="输入关键词，例如：GPT、AI客服、装修推荐">
    <div class="group-title">社交平台 <span class="faint">（会弹出浏览器窗口，读取作品和评论）</span></div>
    <div class="chips" id="browserPlatforms"></div>
+   <div class="hint warn small" id="notLoggedHint" hidden style="margin-top:8px"></div>
    <div class="group-title">公开网站 <span class="faint">（不需要登录）</span></div>
    <div class="chips" id="apiPlatforms"></div>
    <details class="more" id="lockedBox"><summary>需要配置密钥的来源（<span id="lockedCount">0</span>）</summary><p class="small muted">在程序文件夹的 .env 里填写对应的 API 密钥或授权接口后，重启程序就能勾选。</p><div class="chips" id="lockedPlatforms"></div></details>
@@ -470,18 +473,38 @@ document.addEventListener('change', e => {
 const nameOf = id => {const r = catalog.find(x => x.id === id); return r ? shortName(r) : id};
 
 /* ---------------------------------------------------------------- step 1: login */
-let loginPoll;
+let loginPoll, loginStates = {};
+const LOGIN_REQ = ['xhs', 'douyin', 'zhihu', 'tiktok'];
+async function refreshLoginStates(){
+ const r = await api('/api/browser-login-state');
+ $('bgBrowser').checked = !!r.background;
+ if(r.busy && !Object.keys(r.states).length){$('loginStates').innerHTML = '<span class="muted">浏览器正在使用中，用完后显示登录状态</span>'; return}
+ loginStates = r.states;
+ const mark = (v, id) => v === true ? '<span class="tag ok">✔ 已登录</span>' : v === false ? (LOGIN_REQ.includes(id) ? '<span class="tag err">✘ 未登录</span>' : '<span class="tag">未登录（不影响搜索）</span>') : '<span class="tag">? 以浏览器里为准</span>';
+ $('loginStates').innerHTML = `<span class="muted">登录状态（${esc(r.browser)}）：</span>` + catalog.filter(x => x.mode === 'browser')
+  .map(x => `<span>${esc(shortName(x))} ${mark(r.states[x.id], x.id)}</span>`).join('');
+ const missing = catalog.filter(x => LOGIN_REQ.includes(x.id) && r.states[x.id] === false).map(shortName);
+ $('notLoggedHint').hidden = !missing.length;
+ $('notLoggedHint').textContent = missing.length ? `${missing.join('、')} 还没登录，勾选了也会被跳过：先在上面第 ① 步登录。` : '';
+}
+$('bgBrowser').addEventListener('change', guard(null, async () => {
+ await post('/api/settings', {browser_background: $('bgBrowser').checked}, 'PATCH');
+ toast($('bgBrowser').checked ? '之后采集时浏览器在后台运行' : '之后采集时浏览器窗口显示在前面');
+}));
 $('loginButton').addEventListener('click', guard($('loginButton'), async () => {
  const platforms = checked('lp');
  if(!platforms.length) return toast('先勾选要登录的平台', true);
  const r = await post('/api/browser-login', {platforms});
- $('loginStatus').textContent = r.message; toast('浏览器已在电脑上打开，请扫码登录');
+ $('loginStatus').textContent = r.message; toast('浏览器正在打开，请在弹出的窗口里扫码登录，登录完关掉整个窗口');
+ pollLogin();
+}));
+function pollLogin(){
  clearInterval(loginPoll);
  loginPoll = setInterval(async () => {
-  try{const s = await api('/api/browser-login'); $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : ''}">${esc(s.message)}</span>`;
-   if(s.status !== 'running') clearInterval(loginPoll);}catch{clearInterval(loginPoll)}
+  try{const s = await api('/api/browser-login'); $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : s.status === 'partial' ? 'warn' : ''}">${esc(s.message)}</span>`;
+   if(s.status !== 'running'){clearInterval(loginPoll); refreshLoginStates().catch(() => {})}}catch{clearInterval(loginPoll)}
  }, 3000);
-}));
+}
 
 /* ---------------------------------------------------------------- network check */
 let lastNetCheck = null;
@@ -819,7 +842,7 @@ async function refreshSettings(){
 }
 $('saveSettings').addEventListener('click', guard($('saveSettings'), async () => {
  const r = await post('/api/settings', {buyer_words: lines($('setBuyer').value), seller_words: lines($('setSeller').value), exclude_words: lines($('setExclude').value),
-  blocked_authors: lines($('setBlocked').value), hide_sellers: $('setHideSellers').checked, notify_min_score: Math.min(100, Math.max(0, Number($('setNotify').value) || 80))}, 'PUT');
+  blocked_authors: lines($('setBlocked').value), hide_sellers: $('setHideSellers').checked, notify_min_score: Math.min(100, Math.max(0, Number($('setNotify').value) || 80))}, 'PATCH');
  $('settingsResult').textContent = r.rescored ? `已保存，${r.rescored} 条已有线索按新规则重新打分` : '已保存'; toast('规则已保存'); refreshStats();
 }));
 async function refreshTemplates(){
@@ -854,11 +877,11 @@ $('cnManualForm').addEventListener('submit', e => {e.preventDefault(); guard($('
 /* ---------------------------------------------------------------- boot */
 (async () => {
  try{
-  catalog = await api('/api/monitor-sources'); renderPlatforms();
+  catalog = await api('/api/monitor-sources'); renderPlatforms(); refreshLoginStates().catch(() => {});
   await Promise.all([refreshStats(), monitorRefresh(), refreshSources()]);
   const job = Object.values(await api('/api/browser-crawl-active').catch(() => ({}))).find(Boolean);
   if(job) watchJob(job);
-  const s = await api('/api/browser-login'); if(s.status === 'running') $('loginStatus').textContent = s.message;
+  const s = await api('/api/browser-login'); if(s.status === 'running'){$('loginStatus').textContent = s.message; pollLogin()}
  }catch(e){toast(e.message, true)}
  for(const [k, v] of Object.entries(FILTER_DEFAULTS)) $(k).value = v;
  showTab(store.get('tab', 'home'));
