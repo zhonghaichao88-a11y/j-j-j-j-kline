@@ -1,0 +1,6 @@
+fastapi>=0.115.6,<1
+uvicorn[standard]>=0.34.0,<1
+requests>=2.32.3,<3
+SQLAlchemy>=2.0.30,<3
+psycopg[binary]>=3.2,<4; python_version>='3.11'
+python-dotenv>=1.0,<2

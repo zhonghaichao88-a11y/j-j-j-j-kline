@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lead Radar · 线索雷达</title>
+<style>
+:root{--bg:#f3f5f8;--card:#fff;--ink:#17202f;--muted:#667085;--faint:#98a2b3;--line:#e4e7ec;--soft:#f6f8fb;--primary:#2458e6;--primary-ink:#fff;--primary-soft:#eaf0ff;--red:#c4302b;--red-soft:#fdecec;--green:#127a4b;--green-soft:#e6f5ee;--amber:#9a5b00;--amber-soft:#fff4e0;--radius:12px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--primary)}
+button,input,select,textarea{font:inherit;color:inherit}
+input,select,textarea{width:100%;min-width:0;border:1px solid #d0d5dd;border-radius:8px;padding:9px 11px;background:#fff}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--primary-soft);border-color:var(--primary)}
+textarea{min-height:80px;resize:vertical}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #d0d5dd;background:#fff;color:#344054;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap}
+.btn:hover{background:var(--soft)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-ink)}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.big{padding:12px 22px;font-size:15px;border-radius:10px}
+.btn.sm{padding:4px 10px;font-size:12px;border-radius:7px}
+.btn.danger{color:var(--red);border-color:#f4c7c5}
+.btn.ghost{border-color:transparent;background:transparent}
+/* layout */
+.top{background:#121a2b;color:#fff}
+.top-inner{max-width:1180px;margin:auto;padding:14px 20px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:800;letter-spacing:.5px;font-size:18px}
+.brand small{font-weight:500;color:#9fb0cc;margin-left:8px;font-size:12px;letter-spacing:0}
+.pills{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.pill{background:#1f2a40;border-radius:999px;padding:4px 12px;font-size:12px;color:#c9d4e8}
+.pill b{color:#fff;font-size:13px;margin-left:4px;font-variant-numeric:tabular-nums}
+nav.tabs{background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.tabs-inner{max-width:1180px;margin:auto;padding:0 12px;display:flex;gap:4px;overflow-x:auto}
+.tab{border:0;background:none;padding:14px 16px;font-weight:600;color:var(--muted);border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap}
+.tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.tab .badge{background:var(--red);color:#fff;border-radius:999px;font-size:11px;padding:0 7px;margin-left:4px}
+main{max-width:1180px;margin:auto;padding:20px}
+.view{display:none}.view.active{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.card h2{font-size:17px;margin:0 0 4px}
+.card .desc{color:var(--muted);margin:0 0 14px}
+.step{display:flex;gap:14px;align-items:flex-start}
+.step-no{flex:none;width:30px;height:30px;border-radius:50%;background:var(--primary-soft);color:var(--primary);font-weight:800;display:flex;align-items:center;justify-content:center}
+.step-body{flex:1;min-width:0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1;min-width:200px}.spacer{flex:1}
+.muted{color:var(--muted)}.faint{color:var(--faint)}.small{font-size:12px}
+.good{color:var(--green)}.bad{color:var(--red)}.warn{color:var(--amber)}
+.hint{background:var(--soft);border-radius:8px;padding:10px 12px;color:#475467;font-size:13px}
+.hint.warn{background:var(--amber-soft);color:#7a4a00}
+.hint.bad{background:var(--red-soft);color:#8f201c}
+/* platform chips */
+.group-title{font-size:12px;font-weight:700;color:var(--muted);margin:14px 0 6px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{position:relative}
+.chip input{position:absolute;opacity:0;pointer-events:none}
+.chip span{display:inline-flex;align-items:center;gap:6px;border:1px solid #d0d5dd;border-radius:999px;padding:6px 14px;cursor:pointer;background:#fff;user-select:none}
+.chip span::before{content:"";width:14px;height:14px;border-radius:4px;border:1.5px solid #b0b8c6;background:#fff}
+.chip input:checked+span{border-color:var(--primary);background:var(--primary-soft);color:var(--primary);font-weight:600}
+.chip input:checked+span::before{background:var(--primary);border-color:var(--primary);box-shadow:inset 0 0 0 2px #fff}
+.chip input:focus-visible+span{outline:2px solid var(--primary)}
+.chip input:disabled+span{opacity:.45;cursor:not-allowed}
+details.more{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
+details.more summary{cursor:pointer;color:var(--muted);font-size:13px}
+.opts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:10px}
+.opts label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+.actions-main{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px;align-items:center}
+.big-input{font-size:16px;padding:12px 14px;border-radius:10px}
+/* job progress & monitor list */
+.plist{display:grid;gap:8px;margin-top:10px}
+.prow{display:grid;grid-template-columns:120px 1fr auto;gap:10px;align-items:start;padding:8px 10px;border-radius:8px;background:var(--soft);font-size:13px}
+.state{font-weight:700;white-space:nowrap}
+.mon{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:10px}
+.mon-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.mon-head b{font-size:15px}
+.tag{display:inline-block;border-radius:6px;padding:1px 8px;font-size:12px;background:#eef1f6;color:#475467}
+.tag.ok{background:var(--green-soft);color:var(--green)}.tag.err{background:var(--red-soft);color:var(--red)}.tag.run{background:var(--primary-soft);color:var(--primary)}.tag.warnt{background:var(--amber-soft);color:var(--amber)}
+/* leads */
+.filters{display:grid;grid-template-columns:2fr repeat(4,minmax(0,1fr)) auto;gap:8px;margin-bottom:10px}
+.lead{border-top:1px solid var(--line);padding:16px 2px}
+.lead:first-child{border-top:0}
+.lead-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px}
+.pf{font-weight:700;color:#344054}
+.kind{border-radius:6px;padding:0 7px;background:#eef1f6;color:#475467}
+.kind.comment{background:#f1ebff;color:#5b34c7}
+.intent{border-radius:6px;padding:0 7px;font-weight:700}
+.intent.high{background:var(--red-soft);color:var(--red)}.intent.medium{background:var(--amber-soft);color:var(--amber)}.intent.low{background:#f2f4f7;color:var(--faint)}
+.lead h3{margin:6px 0 4px;font-size:15px;overflow-wrap:anywhere}
+.body{white-space:pre-wrap;overflow-wrap:anywhere;color:#344054;margin:4px 0}
+.clamp{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;cursor:pointer}
+.stats{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:#475467;margin:6px 0}
+.stats b{color:var(--ink);font-variant-numeric:tabular-nums}
+.who{font-size:12px;color:var(--muted)}
+.who a{text-decoration:none}
+.lead-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.lead-actions select{width:auto;padding:4px 8px;font-size:12px;border-radius:7px}
+.note{margin-top:8px;padding:8px 10px;background:#fffbea;border-radius:8px;font-size:13px;white-space:pre-wrap}
+.empty{text-align:center;color:var(--muted);padding:40px 12px}
+/* people */
+.person{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,2fr) auto;gap:14px;padding:12px 2px;border-top:1px solid var(--line);align-items:start}
+.person:first-child{border-top:0}
+.person .body{font-size:13px;-webkit-line-clamp:2}
+/* tools */
+details.tool{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:12px}
+details.tool>summary{cursor:pointer;padding:16px 20px;font-weight:700;list-style:none;display:flex;justify-content:space-between}
+details.tool>summary::after{content:"展开";color:var(--faint);font-weight:500;font-size:12px}
+details.tool[open]>summary::after{content:"收起"}
+details.tool>.tool-body{padding:0 20px 18px}
+.field{margin:10px 0}.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+.kw{border-top:1px solid var(--line);padding:10px 0}.kw:first-child{border-top:0}
+.log{padding:8px 0;border-top:1px solid var(--line);font-size:12px}.log:first-child{border-top:0}
+.scroll{max-height:320px;overflow:auto}
+.toast{position:fixed;right:16px;bottom:16px;background:#121a2b;color:#fff;border-radius:10px;padding:12px 16px;max-width:min(440px,92vw);box-shadow:0 8px 30px #0003;display:none;z-index:20}
+.toast.bad{background:#8f201c}
+@media(max-width:860px){.opts{grid-template-columns:1fr 1fr}.filters{grid-template-columns:1fr 1fr}.filters input:first-child{grid-column:1/-1}.person{grid-template-columns:1fr}.prow{grid-template-columns:1fr}.pills{margin-left:0}}
+@media(max-width:520px){main{padding:12px}.card{padding:16px}.step{gap:10px}.step-no{width:26px;height:26px}.btn.big{width:100%}}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-inner">
+ <div class="brand">LEAD RADAR<small>3.3 · 关键词作品 / 评论 / 用户 监控</small></div>
+ <div class="pills" id="metrics"></div>
+</div></header>
+<nav class="tabs"><div class="tabs-inner" role="tablist">
+ <button class="tab active" data-tab="home" role="tab">🔍 搜索与监控</button>
+ <button class="tab" data-tab="leads" role="tab">📋 线索<span class="badge" id="badgeNew" hidden></span></button>
+ <button class="tab" data-tab="people" role="tab">👥 相关用户</button>
+ <button class="tab" data-tab="tools" role="tab">⚙️ 工具与设置</button>
+</div></nav>
+
+<main>
+<!-- ================================================================ HOME -->
+<section class="view active" id="view-home">
+
+ <div class="card" id="loginCard">
+  <div class="step"><div class="step-no">1</div><div class="step-body">
+   <h2>登录平台（首次使用做一次就行）</h2>
+   <p class="desc">小红书、抖音、微博、知乎等要登录才能搜索。点下面的按钮会在电脑上弹出浏览器，在每个标签页扫码登录，完成后关掉浏览器窗口即可，登录状态会保存下来。B站不登录也能用。</p>
+   <div class="chips" id="loginPlatforms"></div>
+   <div class="actions-main"><button class="btn" id="loginButton" type="button">🔑 打开浏览器去登录</button><button class="btn ghost" id="netCheckButton" type="button">🩺 打不开？网络诊断</button><span class="muted small" id="loginStatus"></span></div>
+   <div id="netResult" hidden style="margin-top:14px"></div>
+   <div class="hint bad" id="browserMissing" hidden style="margin-top:12px">还没装好浏览器组件：请关闭程序窗口，重新双击 <b>start.bat</b>，它会自动安装（装不上时会改用电脑自带的 Edge）。</div>
+  </div></div>
+ </div>
+
+ <div class="card" id="monitorPanel">
+  <form id="monitorForm" class="step"><div class="step-no">2</div><div class="step-body">
+   <h2>输入关键词，选择平台</h2>
+   <p class="desc">程序会搜索包含这个关键词的作品，读取作品的点赞、收藏数和下面的评论，自动存进「线索」。</p>
+   <input id="keyword" class="big-input" maxlength="100" required placeholder="输入关键词，例如：GPT、AI客服、装修推荐">
+   <div class="group-title">社交平台 <span class="faint">（会弹出浏览器窗口，读取作品和评论）</span></div>
+   <div class="chips" id="browserPlatforms"></div>
+   <div class="group-title">公开网站 <span class="faint">（不需要登录）</span></div>
+   <div class="chips" id="apiPlatforms"></div>
+   <details class="more" id="lockedBox"><summary>需要配置密钥的来源（<span id="lockedCount">0</span>）</summary><p class="small muted">在程序文件夹的 .env 里填写对应的 API 密钥或授权接口后，重启程序就能勾选。</p><div class="chips" id="lockedPlatforms"></div></details>
+   <details class="more"><summary>高级选项：排序、数量、监控间隔</summary>
+    <div class="opts">
+     <div><label for="optSort">搜索排序</label><select id="optSort"><option value="latest">最新发布优先</option><option value="relevance">综合排序</option></select></div>
+     <div><label for="optPosts">每个平台读几条作品</label><input id="optPosts" type="number" min="1" max="20" value="10"></div>
+     <div><label for="optComments">每条作品读几条评论</label><input id="optComments" type="number" min="0" max="30" value="20"></div>
+     <div><label for="optInterval">持续监控间隔</label><select id="optInterval"><option value="5">每 5 分钟</option><option value="10">每 10 分钟</option><option value="15" selected>每 15 分钟（推荐）</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option><option value="180">每 3 小时</option></select></div>
+    </div>
+   </details>
+   <div class="actions-main">
+    <button class="btn primary big" id="searchNowButton" type="button">🔍 立即搜索一次</button>
+    <button class="btn big" id="monitorAdd" type="submit">⏱ 开启持续监控</button>
+   </div>
+   <p class="small muted" style="margin:10px 0 0"><b>立即搜索一次</b>：现在搜一遍，结果进「线索」。<b>开启持续监控</b>：以后每隔一段时间自动搜，有新内容会提醒你（电脑和程序要一直开着，浏览器窗口不要关）。</p>
+  </div></form>
+ </div>
+
+ <div class="card" id="jobPanel" hidden>
+  <div class="row"><h2 style="margin:0">搜索进度</h2><span class="tag run" id="jobState">进行中</span><span class="spacer"></span><button class="btn sm" type="button" data-goto="leads">查看线索 →</button></div>
+  <div class="plist" id="jobList"></div>
+  <p class="small muted" id="jobEvent" style="margin:8px 0 0"></p>
+ </div>
+
+ <div class="card">
+  <div class="step"><div class="step-no">3</div><div class="step-body">
+   <div class="row"><h2 style="margin:0">我的持续监控</h2><span class="spacer"></span><span class="small muted" id="monitorStatus"></span></div>
+   <div id="monitorList"><div class="empty">还没有监控任务。在上面输入关键词，点「开启持续监控」。</div></div>
+   <details class="more"><summary>最近的检查记录</summary><div id="monitorRecent" class="small muted scroll"></div></details>
+  </div></div>
+ </div>
+</section>
+
+<!-- ================================================================ LEADS -->
+<section class="view" id="view-leads">
+ <div class="card">
+  <div class="row" style="margin-bottom:12px"><h2 style="margin:0">线索</h2><span class="muted small" id="listInfo"></span><span class="spacer"></span><a class="btn sm" href="/api/export.csv">⬇ 导出 CSV</a><button class="btn sm" id="reload" type="button">刷新</button></div>
+  <div class="filters">
+   <input id="search" placeholder="搜索已保存的内容 / 作者">
+   <select id="platformFilter"><option value="">全部平台</option></select>
+   <select id="kindFilter"><option value="">作品和评论</option><option value="comment">只看评论</option><option value="work">只看作品</option></select>
+   <select id="intentFilter"><option value="">全部意向</option><option value="high">高意向</option><option value="medium">中意向</option><option value="low">低意向</option></select>
+   <select id="statusFilter"><option value="">全部状态</option><option value="new">待处理</option><option value="saved">已收藏</option><option value="contacted">已联系</option><option value="replied">已回复</option><option value="won">已成交</option><option value="ignored">忽略</option></select>
+   <button class="btn" id="clearFilters" type="button">清除</button>
+  </div>
+  <input id="authorFilter" type="hidden">
+  <div class="hint small" id="authorFilterInfo" hidden></div>
+  <p class="small faint" id="commentNavigationTip" style="margin:4px 0 8px">评论跳转说明：「打开评论直达链接」会直接跳到那条评论（B站、Reddit、YouTube 等支持）；其他平台点「尝试高亮评论」，程序会在你电脑的浏览器里打开作品、滚动查找并高亮这条评论，不保证找到（评论被折叠、删除或需要登录时可能失败），找不到时可「复制评论文字」手动查找。</p>
+  <div id="items"><div class="empty">正在加载…</div></div>
+  <div class="row" style="justify-content:center;margin-top:10px"><button class="btn" id="loadMore" type="button" hidden>加载更多</button></div>
+ </div>
+</section>
+
+<!-- ================================================================ PEOPLE -->
+<section class="view" id="view-people">
+ <div class="card" id="authorsPanel">
+  <div class="row" style="margin-bottom:6px"><h2 style="margin:0">关键词相关用户</h2><span class="spacer"></span><a class="btn sm" id="authorsCsv" href="/api/authors.csv">⬇ 导出 CSV</a><button class="btn sm" id="authorsReload" type="button">刷新</button></div>
+  <p class="desc">发过相关作品或评论的公开用户，按"高意向"排在前面。点名字打开对方主页。<br><span class="faint small">说明：平台不会公开"谁搜索过某个关键词"，也不公开点赞/收藏的用户名单，所以这里只能列出公开发帖、评论的人。</span></p>
+  <div class="filters" style="grid-template-columns:2fr 1fr auto"><input id="authorsQuery" placeholder="按关键词筛选，例如 GPT（留空 = 全部）"><select id="authorsPlatform"><option value="">全部平台</option></select><button class="btn" id="authorsClear" type="button">清除</button></div>
+  <div id="authors"><div class="empty">正在加载…</div></div>
+ </div>
+</section>
+
+<!-- ================================================================ TOOLS -->
+<section class="view" id="view-tools">
+ <details class="tool" open><summary>📖 使用说明</summary><div class="tool-body small">
+  <p><b>基本流程：</b>①「搜索与监控」里先点「打开浏览器去登录」登录一次 → ② 输入关键词、勾选平台 →「立即搜索一次」或「开启持续监控」→ ③ 到「线索」查看、跟进。</p>
+  <p><b>搜不到东西？</b>看「搜索进度」或监控任务下的红字原因。常见原因：没登录或登录过期（重新点「打开浏览器去登录」）、出现验证码（在弹出的浏览器里手动完成）、关键词太偏。</p>
+  <p><b>能拿到什么：</b>公开作品、作品的点赞/收藏/评论/分享数、可见评论、作者和评论者的昵称与主页。<b>拿不到：</b>别人的搜索记录、点赞/收藏用户名单、私信、手机号。</p>
+  <p><b>注意：</b>监控间隔太短可能触发平台风控，建议 15 分钟以上；程序和电脑要一直开着。</p>
+ </div></details>
+
+ <details class="tool"><summary>✍️ 手动保存一条链接</summary><div class="tool-body">
+  <p class="small muted">自己在平台上看到的好线索，可以粘贴链接存进来统一跟进。</p>
+  <form id="cnManualForm">
+   <div class="opts" style="grid-template-columns:1fr 3fr"><div><label for="cnPlatform">平台</label><select id="cnPlatform"><option value="xhs">小红书</option><option value="douyin">抖音</option><option value="weibo">微博</option><option value="zhihu">知乎</option><option value="bilibili">B站</option><option value="kuaishou">快手</option><option value="tiktok">TikTok</option><option value="tieba">百度贴吧</option></select></div>
+   <div><label for="cnUrl">原文链接（https://…）</label><input type="url" id="cnUrl" required maxlength="2000" placeholder="粘贴作品链接"></div></div>
+   <div class="field"><label for="cnTitle">标题（可选）</label><input id="cnTitle" maxlength="500"></div>
+   <div class="field"><label for="cnText">内容摘要</label><textarea id="cnText" required maxlength="20000" placeholder="粘贴与需求相关的公开文字"></textarea></div>
+   <div class="field"><label for="cnAuthor">作者昵称（可选）</label><input id="cnAuthor" maxlength="300"></div>
+   <button class="btn primary" type="submit" id="cnSaveButton">保存到线索</button> <span class="small muted" id="cnResult"></span>
+  </form>
+ </div></details>
+
+ <details class="tool"><summary>🔌 授权接口 / 单个来源采集</summary><div class="tool-body">
+  <p class="small muted">已在 .env 配置授权 JSON 接口或 API 密钥时使用。日常搜索请用「搜索与监控」。</p>
+  <div class="opts" style="grid-template-columns:1fr 1fr"><div><label for="src">来源</label><select id="src"></select></div><div><label for="query">关键词</label><input id="query" placeholder="例如：AI 客服"></div></div>
+  <div id="sourceInfo" class="small muted"></div>
+  <div class="field" id="rssField" hidden><label for="rssUrl">RSS / Atom 地址</label><input id="rssUrl" type="url" placeholder="https://example.com/feed.xml"></div>
+  <div class="row" style="margin-top:10px"><button class="btn primary" id="ingest" type="button">采集这个来源</button><button class="btn" id="syncAll" type="button">同步全部已配置的授权接口</button></div>
+ </div></details>
+
+ <details class="tool"><summary>🏷️ 关键词组（用于自动打分匹配）</summary><div class="tool-body">
+  <p class="small muted">「单个来源采集」时，只保存命中这些关键词的内容；「排除词」命中的内容不保存。搜索与监控不受这里影响。</p>
+  <div id="keywords"></div>
+  <form id="keywordForm" class="opts" style="grid-template-columns:1fr 2fr 2fr auto;align-items:end">
+   <div><label for="kn">名称</label><input id="kn" maxlength="100" required></div>
+   <div><label for="kt">关键词（逗号隔开）</label><input id="kt" required></div>
+   <div><label for="ke">排除词（可选）</label><input id="ke"></div>
+   <button class="btn primary" type="submit">添加</button>
+  </form>
+ </div></details>
+
+ <details class="tool"><summary>🧾 采集记录</summary><div class="tool-body"><div id="logs" class="scroll"></div></div></details>
+ <details class="tool"><summary>📈 趋势概览</summary><div class="tool-body"><div id="trends" class="small"></div></div></details>
+</section>
+<p class="faint small" style="text-align:center;margin:20px 0">只采集平台公开显示的内容；不读取私信、搜索记录或点赞/收藏用户名单，不绕过登录和验证码。不保证全量。</p>
+</main>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const terms = v => v.split(/[,，、\n]/).map(x => x.trim()).filter(Boolean);
+const STATUSES = {new:'待处理', saved:'已收藏', contacted:'已联系', replied:'已回复', won:'已成交', ignored:'忽略'};
+const INTENTS = {high:'高意向', medium:'中意向', low:'低意向'};
+const PAGE = 60;
+let offset = 0, catalog = [], debounce, sources = [];
+const store = {get(k, d){try{const v = localStorage.getItem('lr.' + k); return v === null ? d : JSON.parse(v)}catch{return d}},
+               set(k, v){try{localStorage.setItem('lr.' + k, JSON.stringify(v))}catch{}}};
+function safeLink(v){try{const u = new URL(v); return ['http:','https:'].includes(u.protocol) ? u.href : null}catch{return null}}
+function toast(msg, bad=false){const x = $('toast'); x.textContent = msg; x.className = 'toast' + (bad ? ' bad' : ''); x.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => x.style.display = 'none', 5500)}
+async function api(path, opts){
+ let r; try{r = await fetch(path, opts)}catch{throw new Error('连接不上程序，请确认 Lead Radar 服务窗口还开着')}
+ let body; try{body = await r.json()}catch{throw new Error(`服务器响应异常 (${r.status})`)}
+ if(!r.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `请求失败 (${r.status})`);
+ return body;
+}
+const post = (path, data, method='POST') => api(path, {method, headers:{'Content-Type':'application/json'}, ...(data ? {body: JSON.stringify(data)} : {})});
+function guard(btn, fn){return async (...args) => {if(btn && btn.disabled) return; if(btn) btn.disabled = true; try{await fn(...args)}catch(e){toast(e.message || String(e), true)}finally{if(btn) btn.disabled = false}}}
+function when(raw){if(!raw) return ''; const d = new Date(raw); if(isNaN(d)) return raw; const diff = (Date.now() - d) / 1000;
+ if(diff >= 0 && diff < 60) return '刚刚'; if(diff >= 0 && diff < 3600) return Math.floor(diff/60) + ' 分钟前'; if(diff >= 0 && diff < 86400) return Math.floor(diff/3600) + ' 小时前';
+ return d.toLocaleString('zh-CN', {hour12:false, month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'})}
+function until(raw){if(!raw) return '—'; const d = new Date(raw); if(isNaN(d)) return raw; const s = (d - Date.now()) / 1000;
+ if(s <= 30) return '马上'; if(s < 3600) return Math.ceil(s/60) + ' 分钟后'; if(s < 86400) return Math.round(s/3600) + ' 小时后'; return when(raw)}
+function fmtCount(n){n = Number(n); if(!isFinite(n)) return ''; return n >= 1e8 ? (n/1e8).toFixed(1).replace(/\.0$/,'') + '亿' : n >= 1e4 ? (n/1e4).toFixed(1).replace(/\.0$/,'') + '万' : String(n)}
+
+/* ---------------------------------------------------------------- tabs */
+function showTab(name){
+ document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+ document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+ store.set('tab', name);
+ if(name === 'leads') refreshItems().catch(e => toast(e.message, true));
+ if(name === 'people') refreshAuthors().catch(e => toast(e.message, true));
+ if(name === 'tools') Promise.all([refreshKeywords(), refreshLogs(), refreshTrends()]).catch(e => toast(e.message, true));
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
+document.addEventListener('click', e => {const g = e.target.closest('[data-goto]'); if(g) showTab(g.dataset.goto)});
+
+/* ---------------------------------------------------------------- header stats */
+async function refreshStats(){
+ const x = await api('/api/stats');
+ $('metrics').innerHTML = [['线索', x.total], ['高意向', x.high], ['待处理', x.new]].map(([l, n]) => `<span class="pill">${l}<b>${n || 0}</b></span>`).join('');
+ $('badgeNew').hidden = !x.new; $('badgeNew').textContent = x.new > 999 ? '999+' : x.new;
+}
+
+/* ---------------------------------------------------------------- platforms */
+function chip(name, value, label, checked, disabled, title=''){
+ return `<label class="chip" title="${esc(title)}"><input type="checkbox" name="${name}" value="${esc(value)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span>${esc(label)}</span></label>`;
+}
+const SHORT = {bilibili:'B站', googlenews:'Google 新闻', bingnews:'Bing 新闻', reddit:'Reddit', github:'GitHub', hackernews:'Hacker News', bluesky:'Bluesky', youtube:'YouTube', x:'X (Twitter)'};
+const shortName = r => SHORT[r.id] || r.name.replace(/ 授权 JSON 接口$/, '（授权接口）').replace(/ 官方 API$/, '').replace(/（非客户名单）/, '');
+function renderPlatforms(){
+ const saved = store.get('platforms', ['xhs', 'douyin', 'bilibili']);
+ const browser = catalog.filter(r => r.mode === 'browser');
+ const ready = catalog.filter(r => r.mode === 'api' && r.configured);
+ const locked = catalog.filter(r => r.mode === 'api' && !r.configured);
+ $('browserPlatforms').innerHTML = browser.map(r => chip('pf', r.id, shortName(r), saved.includes(r.id) && r.configured, !r.configured, r.note)).join('');
+ $('apiPlatforms').innerHTML = ready.map(r => chip('pf', r.id, shortName(r), saved.includes(r.id), false, r.note)).join('') || '<span class="small muted">暂无</span>';
+ $('lockedPlatforms').innerHTML = locked.map(r => chip('locked', r.id, shortName(r), false, true, r.note)).join('');
+ $('lockedCount').textContent = locked.length;
+ const loginSaved = store.get('loginPlatforms', ['xhs', 'douyin', 'weibo', 'zhihu']);
+ $('loginPlatforms').innerHTML = browser.map(r => chip('lp', r.id, shortName(r), loginSaved.includes(r.id), !r.configured)).join('');
+ const missing = browser.length && browser.every(r => !r.configured);
+ $('browserMissing').hidden = !missing; $('loginButton').disabled = missing;
+}
+const checked = name => [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(x => x.value);
+document.addEventListener('change', e => {
+ if(e.target.name === 'pf') store.set('platforms', checked('pf'));
+ if(e.target.name === 'lp') store.set('loginPlatforms', checked('lp'));
+});
+const nameOf = id => {const r = catalog.find(x => x.id === id); return r ? shortName(r) : id};
+
+/* ---------------------------------------------------------------- step 1: login */
+let loginPoll;
+$('loginButton').addEventListener('click', guard($('loginButton'), async () => {
+ const platforms = checked('lp');
+ if(!platforms.length) return toast('先勾选要登录的平台', true);
+ const r = await post('/api/browser-login', {platforms});
+ $('loginStatus').textContent = r.message; toast('浏览器已在电脑上打开，请扫码登录');
+ clearInterval(loginPoll);
+ loginPoll = setInterval(async () => {
+  try{const s = await api('/api/browser-login'); $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : ''}">${esc(s.message)}</span>`;
+   if(s.status !== 'running') clearInterval(loginPoll);}catch{clearInterval(loginPoll)}
+ }, 3000);
+}));
+
+/* ---------------------------------------------------------------- network check */
+let lastNetCheck = null;
+$('netCheckButton').addEventListener('click', guard($('netCheckButton'), async () => {
+ const box = $('netResult'); box.hidden = false;
+ box.innerHTML = '<div class="hint">正在诊断网络：检查域名解析、直连、代理和浏览器访问，大约需要 20-40 秒…</div>';
+ const r = await post('/api/network-check'); lastNetCheck = r;
+ const mark = v => v === true ? '<span class="good">✔</span>' : v === false ? '<span class="bad">✘</span>' : '<span class="faint">–</span>';
+ box.innerHTML = `<div class="hint ${/都能正常打开/.test(r.conclusion) ? '' : 'warn'}"><b>结论：</b>${esc(r.conclusion)}</div>
+  <p class="small muted" style="margin:8px 0">系统代理：${esc(r.system_proxy || '没有开')} · 采集浏览器：${esc(r.browser_proxy_note)}（BROWSER_PROXY=${esc(r.browser_proxy_mode)}）</p>
+  <p class="small" style="margin:4px 0">运行中的虚拟网卡：${(r.virtual_adapters || []).length ? '<span class="bad">' + r.virtual_adapters.map(esc).join('、') + '</span>' : '<span class="good">没有</span>'}
+   · 网卡 DNS：${(r.fake_dns_servers || []).length ? '<span class="bad">' + r.fake_dns_servers.map(esc).join('；') + '（代理软件残留）</span>' : esc((r.dns_servers || []).map(d => d.InterfaceAlias + ' ' + d.Servers).join('；') || '—')}</p>
+  <div class="row" style="margin:6px 0"><button class="btn sm" type="button" id="netFlush">🧹 清除 DNS 缓存</button><span class="small muted" id="netFlushMsg">关掉虚拟网卡后还打不开时点这里，然后重新诊断</span></div>
+  <div class="scroll"><table class="small" style="width:100%;border-collapse:collapse">
+   <tr class="muted" style="text-align:left"><th>平台</th><th>系统 DNS</th><th>公共 DNS</th><th>直连</th><th>走系统代理</th><th>采集浏览器</th></tr>
+   ${r.rows.map(x => `<tr style="border-top:1px solid var(--line)"><td><b>${esc(x.name)}</b></td><td>${x.fake_ip ? '<span class="bad">' + esc(x.dns) + '（假地址）</span>' : esc(x.dns)}</td><td>${esc(x.public_dns || '')}</td><td>${mark(x.direct_ok)} ${esc(x.direct)}</td><td>${mark(x.proxy_ok)} ${esc(x.proxy)}</td><td>${mark(x.browser_ok)} ${esc(x.browser)}</td></tr>`).join('')}
+  </table></div>
+  ${(r.routes || []).length ? `<p class="small" style="margin:10px 0 4px"><b>程序会自动尝试的网络方式（用抖音测试）：</b></p><div class="small">${r.routes.map(x => `<div>${mark(x.ok)} ${esc(x.route)} <span class="faint">${esc(x.detail)}</span></div>`).join('')}</div>` : ''}
+  <div class="row" style="margin-top:8px"><button class="btn sm" type="button" id="netCopy">📋 复制诊断结果（发给技术人员）</button></div>`;
+}));
+$('netResult').addEventListener('click', async e => {
+ if(e.target.id === 'netFlush') return guard(e.target, async () => {
+  const r = await post('/api/network-fix');
+  $('netFlushMsg').innerHTML = `<span class="${r.ok ? 'good' : 'bad'}">${esc(r.output || (r.ok ? '已清除' : '清除失败'))}</span> 现在点上面的「网络诊断」再查一次`;
+ })();
+ if(e.target.id !== 'netCopy' || !lastNetCheck) return;
+ const text = JSON.stringify(lastNetCheck, null, 1);
+ try{await navigator.clipboard.writeText(text); toast('诊断结果已复制')}catch{prompt('复制下面的内容：', text)}
+});
+
+/* ---------------------------------------------------------------- step 2: search / monitor */
+function formValues(){
+ const query = $('keyword').value.trim();
+ const platforms = checked('pf');
+ if(!query){$('keyword').focus(); throw new Error('请先输入关键词')}
+ if(!platforms.length) throw new Error('请至少勾选一个平台');
+ const num = (id, lo, hi, d) => Math.min(hi, Math.max(lo, Number($(id).value) || d));
+ return {query, platforms, sort: $('optSort').value, max_posts: num('optPosts', 1, 20, 10), max_comments: num('optComments', 0, 30, 20)};
+}
+const STATE_LABEL = {queued:['等待中',''], searching:['正在打开','run'], waiting_login:['等你登录/验证','warnt'], reading:['读取中','run'], done:['完成','ok'], empty:['没有结果','warnt'], error:['失败','err']};
+let jobTimer;
+async function watchJob(id){
+ $('jobPanel').hidden = false;
+ clearTimeout(jobTimer);
+ const tick = async () => {
+  let x; try{x = await api('/api/browser-crawl/' + encodeURIComponent(id))}catch(e){$('jobEvent').textContent = e.message; return}
+  const done = x.status === 'finished';
+  $('jobState').textContent = done ? '已完成' : '进行中'; $('jobState').className = 'tag ' + (done ? 'ok' : 'run');
+  $('jobList').innerHTML = Object.entries(x.platforms).map(([p, r]) => {const [label, cls] = STATE_LABEL[r.status] || [r.status, ''];
+   return `<div class="prow"><b>${esc(r.name || nameOf(p))}</b><div>${esc(r.message || '')}${r.error && r.status !== 'waiting_login' ? `<div class="bad small">${esc(r.error)}</div>` : ''}</div><div class="row"><span class="tag ${cls}">${label}</span><span class="small muted">读取 ${r.fetched} · 新增 <b class="${r.inserted ? 'good' : ''}">${r.inserted}</b></span></div></div>`}).join('');
+  $('jobEvent').innerHTML = x.error ? `<span class="bad">${esc(x.error)}</span>` : esc(x.events?.[x.events.length - 1] || '');
+  if(done){const n = Object.values(x.platforms).reduce((a, r) => a + r.inserted, 0); toast(`搜索完成，新增 ${n} 条线索`); refreshStats(); refreshAuthorsQuiet(); return}
+  jobTimer = setTimeout(tick, 2000);
+ };
+ await tick();
+}
+$('searchNowButton').addEventListener('click', guard($('searchNowButton'), async () => {
+ const v = formValues();
+ const job = await post('/api/search-now', v);
+ toast(v.platforms.some(p => catalog.find(r => r.id === p)?.mode === 'browser') ? '已开始搜索，电脑上会弹出浏览器窗口，请不要关闭' : '已开始搜索');
+ await watchJob(job.id);
+ $('jobPanel').scrollIntoView({behavior:'smooth', block:'nearest'});
+}));
+$('monitorForm').addEventListener('submit', e => {e.preventDefault(); guard($('monitorAdd'), async () => {
+ const v = formValues();
+ await post('/api/monitors', {...v, interval_minutes: Number($('optInterval').value)});
+ if('Notification' in window && Notification.permission === 'default'){try{await Notification.requestPermission()}catch{}}
+ toast(`已开启「${v.query}」的持续监控，马上开始第一次检查`); await monitorRefresh();
+})()});
+
+/* ---------------------------------------------------------------- step 3: monitors */
+const MON_LABEL = {ok:['正常','ok'], partial:['部分失败','warnt'], error:['失败','err'], running:['正在检查','run'], pending:['排队中','run'], paused:['已暂停','']};
+const prevRuns = new Map(); let monStarted = false;
+async function monitorRefresh(){
+ const list = await api('/api/monitors');
+ $('monitorStatus').textContent = list.length ? `${list.filter(m => m.active).length} 个运行中 · 每 20 秒自动刷新` : '';
+ $('monitorList').innerHTML = list.length ? list.map(m => {const [label, cls] = MON_LABEL[m.active ? m.last_status : 'paused'] || [m.last_status, ''];
+  return `<div class="mon"><div class="mon-head"><b>${esc(m.query)}</b><span class="tag ${cls}">${label}</span><span class="small muted">${m.platforms.map(nameOf).map(esc).join('、')} · 每 ${m.interval_minutes} 分钟 · ${m.sort === 'relevance' ? '综合排序' : '最新优先'}</span></div>
+   <div class="small muted" style="margin-top:4px">上次检查 ${m.last_run_at ? esc(when(m.last_run_at)) : '还没有'} · 下次 ${m.active ? (m.last_status === 'running' ? '正在检查' : esc(until(m.next_run_at))) : '已暂停'} · 上次新增 <b class="${m.last_new ? 'good' : ''}">${m.last_new}</b> 条 · 共检查 ${m.run_count} 次</div>
+   ${m.last_error ? `<details class="small bad" style="margin-top:4px"><summary>有 ${m.last_error.split('；').length} 个来源没成功，点开看原因</summary>${m.last_error.split('；').map(x => `<div>· ${esc(x)}</div>`).join('')}</details>` : ''}
+   <div class="row" style="margin-top:8px"><button class="btn sm" data-mon-run="${m.id}" ${m.active ? '' : 'disabled'}>立即检查</button><button class="btn sm" data-mon-toggle="${m.id}" data-enable="${m.active ? '0' : '1'}">${m.active ? '暂停' : '继续'}</button><button class="btn sm" data-goto="leads">看结果</button><span class="spacer"></span><button class="btn sm danger" data-mon-del="${m.id}">删除</button></div></div>`}).join('')
+  : '<div class="empty">还没有监控任务。在上面输入关键词，点「开启持续监控」。</div>';
+ let changed = false;
+ for(const m of list){
+  const prev = prevRuns.get(m.id);
+  if(monStarted && prev !== undefined && m.last_run_id && m.last_run_id !== prev){
+   changed = true;
+   if(m.last_new > 0){toast(`「${m.query}」新增 ${m.last_new} 条内容`);
+    if('Notification' in window && Notification.permission === 'granted') new Notification('Lead Radar 发现新线索', {body: `关键词：${m.query} · 新增 ${m.last_new} 条`});}
+  }
+  prevRuns.set(m.id, m.last_run_id);
+ }
+ monStarted = true;
+ if(changed){refreshStats(); if($('view-leads').classList.contains('active')) refreshItems()}
+ const runs = await api('/api/monitor-runs?limit=10');
+ $('monitorRecent').innerHTML = runs.length ? runs.map(r => `<div class="log">${esc(when(r.finished_at))} · 任务 #${r.monitor_id} · 读取 ${r.fetched} · 新增 ${r.inserted} ${r.status === 'ok' ? '' : '<span class="warn">（' + esc(MON_LABEL[r.status]?.[0] || r.status) + '）</span>'}</div>`).join('') : '暂无';
+}
+$('monitorList').addEventListener('click', e => {
+ const b = e.target.closest('[data-mon-run],[data-mon-toggle],[data-mon-del]'); if(!b) return;
+ guard(b, async () => {
+  if(b.dataset.monRun){await post(`/api/monitors/${b.dataset.monRun}/run`); toast('已加入检查队列')}
+  else if(b.dataset.monToggle){await post(`/api/monitors/${b.dataset.monToggle}`, {active: b.dataset.enable === '1'}, 'PATCH'); toast(b.dataset.enable === '1' ? '已继续' : '已暂停')}
+  else {if(!confirm('删除这个监控任务？已保存的线索不会删除。')) return; await post(`/api/monitors/${b.dataset.monDel}`, null, 'DELETE'); toast('已删除')}
+  await monitorRefresh();
+ })();
+});
+setInterval(() => monitorRefresh().catch(() => {}), 20000);
+
+/* ---------------------------------------------------------------- leads */
+const METRIC_LABELS = [['view','播放'],['like','点赞'],['collect','收藏'],['coin','投币'],['comment','评论'],['share','分享'],['repost','转发'],['quote','引用']];
+function metricsMarkup(m){const parts = METRIC_LABELS.filter(([k]) => m && m[k] !== undefined && m[k] !== null).map(([k, l]) => `<span>${l} <b>${fmtCount(m[k])}</b></span>`); return parts.length ? `<div class="stats">${parts.join('')}</div>` : ''}
+const BROWSER_COMMENT_SOURCES = ['小红书','抖音','微博','知乎','哔哩哔哩','快手','TikTok','百度贴吧'].map(x => x + '评论');
+const platformOf = s => String(s || '').replace(/(作品|评论|视频)$/, '');
+function authorMarkup(x){const link = safeLink(x.author_url); return link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(x.author || '主页')} ↗</a>` : esc(x.author || '未知')}
+function itemMarkup(x){
+ const isComment = String(x.source || '').endsWith('评论');
+ const direct = isComment && x.navigation_kind === 'direct' && safeLink(x.comment_url || x.url);
+ const link = safeLink(direct || x.post_url || x.url);
+ const postLink = isComment && direct ? safeLink(x.post_url) : null;
+ const canLocate = isComment && BROWSER_COMMENT_SOURCES.includes(x.source) && ['assisted','direct'].includes(x.navigation_kind);
+ const manual = isComment && !direct && !canLocate;
+ const news = ['Google News','Bing News'].includes(x.source);
+ const title = isComment ? String(x.title || '').replace(/^评论 · /, '') : (x.title || '(无标题)');
+ return `<article class="lead">
+  <div class="lead-head"><span class="pf">${esc(platformOf(x.source))}</span><span class="kind ${isComment ? 'comment' : ''}">${isComment ? '评论' : '作品'}</span>${news ? '<span class="intent low">新闻资讯</span>' : `<span class="intent ${esc(x.intent)}">${esc(INTENTS[x.intent] || '未知')} ${Number(x.score) || 0}</span>`}<span class="faint">${x.published_at ? '发布 ' + esc(when(x.published_at)) + ' · ' : ''}入库 ${esc(when(x.created_at))}</span><span class="spacer"></span><span class="faint">#${x.id}</span></div>
+  <h3>${isComment ? '<span class="faint">评论于：</span>' : ''}${esc(title)}</h3>
+  <div class="body clamp" title="点击展开/收起">${esc(x.text || '')}</div>
+  ${metricsMarkup(x.metrics)}
+  <div class="who">${isComment ? '评论者' : '作者'}：${authorMarkup(x)}${(x.matched_terms || []).length ? ' · 关键词：' + esc(x.matched_terms.join('、')) : ''}</div>
+  <div class="lead-actions">
+   ${link ? `<a class="btn sm primary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${direct ? '打开评论直达链接 ↗' : isComment ? '打开所属作品 ↗' : '打开原文 ↗'}</a>` : '<span class="small muted">无原文链接</span>'}
+   ${postLink ? `<a class="btn sm" href="${esc(postLink)}" target="_blank" rel="noopener noreferrer">所属作品 ↗</a>` : ''}
+   ${canLocate ? `<button class="btn sm" data-locate-comment="${x.id}" title="在你电脑的浏览器里打开作品并滚动查找、高亮这条评论，不保证找到">🎯 尝试高亮评论</button>` : ''}
+   ${manual ? '<span class="small muted">暂不支持评论直达，请在作品页面查找</span>' : ''}
+   ${isComment ? `<button class="btn sm" data-copy-comment="${x.id}">复制评论文字</button>` : ''}
+   <span class="spacer"></span>
+   <select data-status="${x.id}" aria-label="跟进状态">${Object.entries(STATUSES).map(([v, n]) => `<option value="${v}" ${v === x.status ? 'selected' : ''}>${n}</option>`).join('')}</select>
+   <button class="btn sm ghost" data-note="${x.id}">✏️ 备注</button>
+  </div>
+  ${x.notes ? `<div class="note">${esc(x.notes)}</div>` : ''}
+ </article>`;
+}
+function itemParams(){return new URLSearchParams({q: $('search').value, platform: $('platformFilter').value, kind: $('kindFilter').value, intent: $('intentFilter').value, status: $('statusFilter').value, author: $('authorFilter').value, limit: String(PAGE), offset: String(offset)})}
+async function refreshPlatformFilter(){
+ const rows = await api('/api/platforms'); const sel = $('platformFilter'); const cur = sel.value;
+ sel.innerHTML = '<option value="">全部平台</option>' + rows.map(r => `<option value="${esc(r.platform)}">${esc(r.platform)}（${r.count}）</option>`).join('');
+ sel.value = rows.some(r => r.platform === cur) ? cur : '';
+}
+async function refreshItems(append=false){
+ if(!append){offset = 0; refreshPlatformFilter().catch(() => {})}
+ const rows = await api('/api/items?' + itemParams());
+ const html = rows.map(itemMarkup).join('');
+ $('items').innerHTML = append ? $('items').innerHTML + html : (html || '<div class="empty">没有符合条件的线索。<br>去「搜索与监控」输入关键词搜一次吧。</div>');
+ offset += rows.length;
+ $('listInfo').textContent = offset ? `显示 ${offset} 条 · 高意向在前` : '';
+ $('loadMore').hidden = rows.length < PAGE;
+ const a = $('authorFilter').value; $('authorFilterInfo').hidden = !a;
+ if(a) $('authorFilterInfo').innerHTML = `只显示用户「${esc(a)}」的内容 <button class="btn sm" id="clearAuthor" type="button">取消</button>`;
+}
+for(const id of ['platformFilter','kindFilter','intentFilter','statusFilter']) $(id).addEventListener('change', () => refreshItems().catch(e => toast(e.message, true)));
+$('search').addEventListener('input', () => {clearTimeout(debounce); debounce = setTimeout(() => refreshItems().catch(e => toast(e.message, true)), 300)});
+$('clearFilters').addEventListener('click', () => {for(const id of ['search','platformFilter','kindFilter','intentFilter','statusFilter','authorFilter']) $(id).value = ''; refreshItems().catch(e => toast(e.message, true))});
+$('authorFilterInfo').addEventListener('click', e => {if(e.target.id === 'clearAuthor'){$('authorFilter').value = ''; refreshItems()}});
+$('loadMore').addEventListener('click', () => refreshItems(true).catch(e => toast(e.message, true)));
+$('reload').addEventListener('click', () => refreshItems().catch(e => toast(e.message, true)));
+$('items').addEventListener('change', e => {const id = e.target.dataset.status; if(!id) return;
+ guard(null, async () => {await post('/api/items/' + id, {status: e.target.value}, 'PATCH'); toast('已更新为「' + STATUSES[e.target.value] + '」'); refreshStats()})()});
+$('items').addEventListener('click', e => {
+ const body = e.target.closest('.body'); if(body){body.classList.toggle('clamp'); return}
+ const copy = e.target.closest('[data-copy-comment]');
+ if(copy) return guard(copy, async () => {const x = await api('/api/items/' + copy.dataset.copyComment); const val = `${x.author || '未知用户'}：${x.text || ''}`;
+  try{await navigator.clipboard.writeText(val); toast('评论已复制，可以在作品页里查找')}catch{prompt('复制下面的评论内容：', val)}})();
+ const note = e.target.closest('[data-note]');
+ if(note) return guard(note, async () => {const cur = await api('/api/items/' + note.dataset.note); const v = prompt('跟进备注：', cur.notes || ''); if(v === null) return;
+  await post('/api/items/' + note.dataset.note, {notes: v}, 'PATCH'); await refreshItems(); toast('备注已保存')})();
+ const loc = e.target.closest('[data-locate-comment]');
+ if(loc) return guard(loc, async () => {
+  const job = await post('/api/items/' + loc.dataset.locateComment + '/locate-comment');
+  toast('正在电脑上打开浏览器查找这条评论…');
+  for(let i = 0; i < 80; i++){
+   await new Promise(r => setTimeout(r, 1500));
+   const s = await api('/api/comment-locate/' + job.id);
+   if(s.status !== 'running'){toast(s.message || '定位结束', s.status !== 'located'); return}
+  }
+  toast('还在查找，请看电脑上的浏览器窗口');
+ })();
+});
+
+/* ---------------------------------------------------------------- people */
+async function refreshAuthors(){
+ const params = new URLSearchParams({q: $('authorsQuery').value.trim(), platform: $('authorsPlatform').value, limit: '200'});
+ $('authorsCsv').href = '/api/authors.csv?' + params;
+ const rows = await api('/api/authors?' + params);
+ const sel = $('authorsPlatform'); const cur = sel.value;
+ for(const p of new Set(rows.map(r => r.platform))) if(![...sel.options].some(o => o.value === p)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(p)}">${esc(p)}</option>`);
+ sel.value = cur;
+ $('authors').innerHTML = rows.length ? rows.map(r => `<div class="person">
+   <div><b>${authorMarkup(r)}</b> <span class="tag">${esc(r.platform)}</span>
+    <div class="small muted">作品 ${r.works} · 评论 ${r.comments}${r.high_intent ? ` · <span class="bad">高意向 ${r.high_intent}</span>` : ''}${r.likes_received ? ` · 获赞 ${fmtCount(r.likes_received)}` : ''}</div>
+    <div class="small faint">最近出现：${esc(when(r.last_seen))}</div></div>
+   <div class="body clamp small">${esc(r.latest_text)}</div>
+   <div class="row">${safeLink(r.latest_url) ? `<a class="btn sm" href="${esc(safeLink(r.latest_url))}" target="_blank" rel="noopener noreferrer">最近内容 ↗</a>` : ''}<button class="btn sm" data-author-filter="${esc(r.author)}">看 TA 的全部线索</button></div>
+  </div>`).join('') : '<div class="empty">还没有用户数据。先去「搜索与监控」搜一次。</div>';
+}
+const refreshAuthorsQuiet = () => {if($('view-people').classList.contains('active')) refreshAuthors().catch(() => {})};
+$('authorsQuery').addEventListener('input', () => {clearTimeout(debounce); debounce = setTimeout(() => refreshAuthors().catch(e => toast(e.message, true)), 300)});
+$('authorsPlatform').addEventListener('change', () => refreshAuthors().catch(e => toast(e.message, true)));
+$('authorsReload').addEventListener('click', () => refreshAuthors().catch(e => toast(e.message, true)));
+$('authorsClear').addEventListener('click', () => {$('authorsQuery').value = ''; $('authorsPlatform').value = ''; refreshAuthors().catch(e => toast(e.message, true))});
+$('authors').addEventListener('click', e => {
+ const b = e.target.closest('[data-author-filter]'); if(!b) return;
+ for(const id of ['search','platformFilter','kindFilter','intentFilter','statusFilter']) $(id).value = '';
+ $('authorFilter').value = b.dataset.authorFilter; showTab('leads');
+});
+
+/* ---------------------------------------------------------------- tools */
+async function refreshSources(){
+ sources = await api('/api/sources'); const prev = $('src').value;
+ $('src').innerHTML = sources.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.configured ? '' : '（未配置）'}</option>`).join('');
+ if(sources.some(x => x.id === prev)) $('src').value = prev; renderSourceInfo();
+}
+function renderSourceInfo(){const s = sources.find(x => x.id === $('src').value); if(!s) return; const rss = s.id === 'rss';
+ $('rssField').hidden = !rss; $('query').disabled = s.id === 'demo' || rss;
+ $('sourceInfo').innerHTML = `<span class="${s.configured ? 'good' : 'warn'}">${s.configured ? '● 可以使用' : '● 未配置，不能采集'}</span>${s.note ? ' · ' + esc(s.note) : ''}`}
+$('src').addEventListener('change', renderSourceInfo);
+$('ingest').addEventListener('click', guard($('ingest'), async () => {const r = await post('/api/ingest', {source: $('src').value, query: $('query').value, url: $('rssUrl').value});
+ toast(`采集 ${r.fetched} 条，匹配 ${r.matched}，新增 ${r.inserted}，重复 ${r.duplicates}`); refreshStats(); refreshLogs()}));
+$('syncAll').addEventListener('click', guard($('syncAll'), async () => {const r = await post('/api/ingest-all?query=' + encodeURIComponent($('query').value));
+ toast(r.configured_sources ? `已同步 ${r.configured_sources} 个授权接口，详情见采集记录` : '还没有配置任何授权接口'); refreshStats(); refreshLogs()}));
+async function refreshKeywords(){const ks = await api('/api/keywords');
+ $('keywords').innerHTML = ks.length ? ks.map(k => `<div class="kw row"><label class="chip"><input type="checkbox" data-kw-toggle="${k.id}" ${k.active ? 'checked' : ''}><span>${esc(k.name)}</span></label><span class="small muted grow">包含：${esc(k.terms.join('、'))}${k.excludes.length ? ' · 排除：' + esc(k.excludes.join('、')) : ''}</span><button class="btn sm danger" data-kw-del="${k.id}">删除</button></div>`).join('') : '<p class="small muted">还没有关键词组</p>'}
+$('keywordForm').addEventListener('submit', e => {e.preventDefault(); guard(null, async () => {await post('/api/keywords', {name: $('kn').value, terms: terms($('kt').value), excludes: terms($('ke').value)}); $('keywordForm').reset(); await refreshKeywords(); toast('关键词组已添加')})()});
+$('keywords').addEventListener('click', e => {const b = e.target.closest('[data-kw-del]'); if(!b) return; if(!confirm('删除这个关键词组？已保存的线索不会删除。')) return;
+ guard(b, async () => {await post('/api/keywords/' + b.dataset.kwDel, null, 'DELETE'); await refreshKeywords(); toast('已删除')})()});
+$('keywords').addEventListener('change', e => {const id = e.target.dataset.kwToggle; if(!id) return; guard(null, async () => {await post('/api/keywords/' + id, {active: e.target.checked}, 'PATCH'); toast('已更新')})()});
+async function refreshLogs(){const rows = await api('/api/ingest-logs?limit=30');
+ $('logs').innerHTML = rows.length ? rows.map(x => `<div class="log"><b>${esc(x.source)}</b> <span class="faint">${esc(when(x.finished_at))} · ${esc(x.query || '—')}</span><div>${x.error ? `<span class="bad">失败：${esc(x.error)}</span>` : `<span class="good">读取 ${x.fetched} · 匹配 ${x.matched} · 新增 ${x.inserted}</span>`}</div></div>`).join('') : '<span class="small muted">暂无记录</span>'}
+async function refreshTrends(){const x = await api('/api/trends');
+ $('trends').innerHTML = [['来源', Object.entries(x.sources || {})], ['高频主题', x.topics || []], ['话题标签', x.hashtags || []]].map(([n, rows]) => `<p><b>${n}：</b>${rows.slice(0, 12).map(([t, c]) => `<span class="tag">${esc(t)} ${c}</span>`).join(' ') || '暂无'}</p>`).join('')}
+$('cnManualForm').addEventListener('submit', e => {e.preventDefault(); guard($('cnSaveButton'), async () => {
+ const r = await post('/api/platforms/manual-save', {platform: $('cnPlatform').value, url: $('cnUrl').value.trim(), title: $('cnTitle').value.trim(), text: $('cnText').value.trim(), author: $('cnAuthor').value.trim()});
+ $('cnResult').textContent = r.duplicate ? '这条已经存过了' : '已保存，可以在「线索」里看到'; toast(r.duplicate ? '已存在，未重复保存' : '已保存');
+ if(!r.duplicate) $('cnManualForm').reset(); refreshStats();
+})()});
+
+/* ---------------------------------------------------------------- boot */
+(async () => {
+ try{
+  catalog = await api('/api/monitor-sources'); renderPlatforms();
+  await Promise.all([refreshStats(), monitorRefresh(), refreshSources()]);
+  const job = Object.values(await api('/api/browser-crawl-active').catch(() => ({}))).find(Boolean);
+  if(job) watchJob(job);
+  const s = await api('/api/browser-login'); if(s.status === 'running') $('loginStatus').textContent = s.message;
+ }catch(e){toast(e.message, true)}
+ showTab(store.get('tab', 'home'));
+})();
+</script>
+</body></html>
