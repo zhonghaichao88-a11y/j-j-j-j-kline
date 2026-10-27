@@ -6,6 +6,7 @@ import hashlib
 import html
 import os
 import re
+import time
 import requests
 import xml.etree.ElementTree as ET
 
@@ -86,7 +87,10 @@ def clean_metrics(raw):
 
 def _clean_markup(s):
     # Algolia/HN and RSS return HTML; decode entities such as &#x27; after stripping tags.
-    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", " ", str(s or "")))).strip()
+    # Inline highlight tags (<em>/<font>/<b>...) vanish without a space: Chinese search results
+    # wrap the matched word in them ("医院<font>客服</font>系统" -> "医院客服系统").
+    s = re.sub(r"</?(?:em|b|strong|font|span|i|u|mark|a)(?:\s[^>]*)?>", "", str(s or ""), flags=re.I)
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", " ", s))).strip()
 
 
 def fetch_rss(url: str, source: str = "RSS", redirect_hosts=()):
@@ -119,9 +123,43 @@ def fetch_rss(url: str, source: str = "RSS", redirect_hosts=()):
     return out
 
 
+_REDDIT_TOKEN = {"value": "", "expires": 0.0}
+
+
+def _reddit_api():
+    """(base URL, headers). Reddit blocks most anonymous .json requests (403) since 2023-2024;
+    with REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET (a free "script" app at reddit.com/prefs/apps)
+    the official application-only OAuth endpoint is used instead."""
+    agent = os.getenv("REDDIT_USER_AGENT", "").strip() or "LeadRadar/4.0 (keyword monitor)"
+    cid, secret = os.getenv("REDDIT_CLIENT_ID", "").strip(), os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+    if not (cid and secret):
+        return "https://www.reddit.com", {"User-Agent": agent}, ".json"
+    if not _REDDIT_TOKEN["value"] or _REDDIT_TOKEN["expires"] < time.time() + 60:
+        r = requests.post("https://www.reddit.com/api/v1/access_token", auth=(cid, secret),
+                          data={"grant_type": "client_credentials"}, headers={"User-Agent": agent},
+                          timeout=20, allow_redirects=False)
+        if r.status_code in (400, 401, 403):
+            raise RuntimeError("Reddit 授权失败：请检查 .env 里的 REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET")
+        r.raise_for_status()
+        body = r.json()
+        _REDDIT_TOKEN.update(value=str(body.get("access_token") or ""),
+                             expires=time.time() + float(body.get("expires_in") or 3600))
+        if not _REDDIT_TOKEN["value"]:
+            raise RuntimeError("Reddit 没有返回访问令牌")
+    return "https://oauth.reddit.com", {"User-Agent": agent, "Authorization": "Bearer " + _REDDIT_TOKEN["value"]}, ""
+
+
 def fetch_reddit_json(query: str):
-    r = _get("https://www.reddit.com/search.json", params={"q": query, "sort": "new", "limit": 50},
-             headers={"User-Agent": "LeadRadar/2.0 public-feed-aggregator"})
+    base, headers, suffix = _reddit_api()
+    try:
+        r = _get(base + "/search" + suffix, params={"q": query, "sort": "new", "limit": 50, "raw_json": 1},
+                 headers=headers)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code in (401, 403, 429) and suffix:
+            raise RuntimeError("Reddit 拒绝了未登录的访问（%s）。到 reddit.com/prefs/apps 免费创建一个 script 应用，"
+                               "把 client id / secret 填进 .env 的 REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET 后重启"
+                               % exc.response.status_code) from exc
+        raise
     out = []
     for child in r.json().get("data", {}).get("children", []):
         d = child.get("data", {})
@@ -263,10 +301,25 @@ def fetch_hackernews(query: str):
     return out
 
 
+BLUESKY_HOSTS = ("api.bsky.app", "public.api.bsky.app")
+
+
 def fetch_bluesky(query: str):
     """Public Bluesky AppView posts. Search may be rate-limited or require auth in some deployments."""
-    r = _get("https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts", params={
-        "q": query, "sort": "latest", "limit": 50})
+    params = {"q": query, "sort": "latest", "limit": 50}
+    # public.api.bsky.app (the documented cached AppView) answers searchPosts with 403 since
+    # 2025; api.bsky.app still serves it anonymously. Try both, newest working host first.
+    last = None
+    for host in BLUESKY_HOSTS:
+        try:
+            r = _get(f"https://{host}/xrpc/app.bsky.feed.searchPosts", params=params)
+            break
+        except requests.HTTPError as exc:
+            last = exc
+            if exc.response is None or exc.response.status_code not in (401, 403, 404):
+                raise
+    else:
+        raise RuntimeError("Bluesky 搜索接口拒绝匿名访问，请稍后再试") from last
     out = []
     for post in r.json().get("posts", []):
         uri = str(post.get("uri") or "")
@@ -302,14 +355,15 @@ def fetch_reddit_with_comments(query: str, max_posts: int = 5, max_comments: int
     posts = fetch_reddit_json(query)[:max_posts]
     out = list(posts)
     for post in posts:
-        path = urlparse(post.url).path.rstrip("/") + ".json"
+        path = urlparse(post.url).path.rstrip("/")
         # Only construct from trusted reddit path returned by search.
-        if not re.fullmatch(r"/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+/(?:[A-Za-z0-9_%-]+/?)?\.json", path):
+        if not re.fullmatch(r"/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+(?:/[A-Za-z0-9_%-]+)?", path):
             continue
         try:
-            resp = _get("https://www.reddit.com" + path,
-                        params={"limit": min(50, max_comments), "depth": 1, "sort": "new"},
-                        headers={"User-Agent": "LeadRadar/3.0 (public comment research)"})
+            base, headers, suffix = _reddit_api()
+            resp = _get(base + path + suffix,
+                        params={"limit": min(50, max_comments), "depth": 1, "sort": "new", "raw_json": 1},
+                        headers=headers)
             threads = resp.json()
         except (requests.RequestException, ValueError):
             continue  # one blocked thread must not discard already-found posts
@@ -539,3 +593,216 @@ def fetch_platform(platform: str, query: str):
 def item_key(item):
     # Keep previous key scheme for backwards-compatible deduplication.
     return hashlib.sha256((item.dedup_token or item.url or item.title + item.text).encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------- 4.0: more public sources
+# Every source below was checked to answer anonymously (2026-10). Sources may still rate
+# limit or change; failures are reported per source instead of being hidden.
+
+def _ts(value):
+    try:
+        return datetime.fromtimestamp(int(value), timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def _csv_env(name, default=""):
+    return [x.strip() for x in os.getenv(name, default).replace("，", ",").split(",") if x.strip()]
+
+
+_HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+
+
+def _clean_host(raw):
+    """'https://forum.example.com/' -> 'forum.example.com'; '' for anything that isn't a plain host."""
+    host = re.sub(r"^https?://", "", str(raw or "").strip().lower()).split("/", 1)[0]
+    return host if _HOST_RE.fullmatch(host) else ""
+
+
+STACKEXCHANGE_DOMAINS = {"stackoverflow": "stackoverflow.com", "superuser": "superuser.com",
+                         "serverfault": "serverfault.com", "askubuntu": "askubuntu.com"}
+
+
+def fetch_stackexchange(query: str, max_items: int = 30):
+    """Questions on Stack Overflow & other Stack Exchange sites (official API, keyless: 300
+    requests/day per IP; STACKEXCHANGE_KEY raises it to 10,000). STACKEXCHANGE_SITES picks sites."""
+    sites = [s for s in _csv_env("STACKEXCHANGE_SITES", "stackoverflow,softwarerecs,webapps")
+             if re.fullmatch(r"[a-z0-9.-]{2,40}", s)][:5] or ["stackoverflow"]
+    out, errors = [], []
+    for site in sites:
+        params = {"order": "desc", "sort": "creation", "q": query, "site": site,
+                  "pagesize": min(50, max(1, max_items)), "filter": "withbody"}
+        if os.getenv("STACKEXCHANGE_KEY"):
+            params["key"] = os.environ["STACKEXCHANGE_KEY"]
+        try:
+            body = _get("https://api.stackexchange.com/2.3/search/advanced", params=params).json()
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f"{site}: {str(exc)[:120]}")
+            continue
+        if body.get("error_message"):
+            errors.append(f"{site}: {body['error_message'][:120]}")
+            continue
+        label = "Stack Overflow" if site == "stackoverflow" else "StackExchange·" + site
+        for q in body.get("items", []):
+            link = str(q.get("link") or "")
+            if not link.startswith("https://"):
+                continue
+            owner = q.get("owner") or {}
+            profile = str(owner.get("link") or "")
+            out.append(PublicItem(label, _clean_markup(q.get("title")), _clean_markup(q.get("body"))[:6000], link,
+                                  _clean_markup(owner.get("display_name")), _ts(q.get("creation_date")),
+                                  author_url=profile if profile.startswith("https://") else "",
+                                  metrics=clean_metrics({"like": q.get("score"), "comment": q.get("answer_count"),
+                                                         "view": q.get("view_count")})))
+    if not out and errors:
+        raise RuntimeError("Stack Exchange 请求失败：" + "；".join(errors))
+    return out
+
+
+def fetch_lemmy(query: str, max_items: int = 30):
+    """Lemmy (federated Reddit alternative): posts and comments via any instance's /api/v3/search."""
+    instance = _clean_host(os.getenv("LEMMY_INSTANCE", "lemmy.world")) or "lemmy.world"
+    body = _get(f"https://{instance}/api/v3/search", params={
+        "q": query, "type_": "All", "sort": "New", "limit": min(50, max(1, max_items))}).json()
+    out = []
+    for row in body.get("posts", []):
+        post, creator, counts = row.get("post") or {}, row.get("creator") or {}, row.get("counts") or {}
+        url = str(post.get("ap_id") or "")
+        if not url.startswith("https://"):
+            continue
+        out.append(PublicItem("Lemmy", post.get("name") or "", _clean_markup(post.get("body"))[:6000], url,
+                              creator.get("display_name") or creator.get("name") or "", post.get("published") or "",
+                              author_url=str(creator.get("actor_id") or "") if str(creator.get("actor_id") or "").startswith("https://") else "",
+                              metrics=clean_metrics({"like": counts.get("score"), "comment": counts.get("comments")})))
+    for row in body.get("comments", []):
+        comment, post, creator = row.get("comment") or {}, row.get("post") or {}, row.get("creator") or {}
+        url, post_url = str(comment.get("ap_id") or ""), str(post.get("ap_id") or "")
+        if not (url.startswith("https://") and post_url.startswith("https://")):
+            continue
+        out.append(PublicItem("Lemmy评论", "评论 · " + str(post.get("name") or "")[:80],
+                              _clean_markup(comment.get("content"))[:4000], url,
+                              creator.get("display_name") or creator.get("name") or "", comment.get("published") or "",
+                              post_url=post_url, comment_id=str(comment.get("id") or ""), comment_url=url,
+                              navigation_kind="direct",
+                              author_url=str(creator.get("actor_id") or "") if str(creator.get("actor_id") or "").startswith("https://") else "",
+                              metrics=clean_metrics({"like": (row.get("counts") or {}).get("score")})))
+    return out
+
+
+def fetch_mastodon(query: str, max_items: int = 40):
+    """Mastodon. Without a token only hashtag timelines are public, so the keyword is used as
+    a hashtag (spaces removed). MASTODON_ACCESS_TOKEN enables real full-text status search."""
+    instance = _clean_host(os.getenv("MASTODON_INSTANCE", "mastodon.social")) or "mastodon.social"
+    token = os.getenv("MASTODON_ACCESS_TOKEN", "").strip()
+    if token:
+        body = _get(f"https://{instance}/api/v2/search", params={
+            "q": query, "type": "statuses", "limit": min(40, max_items), "resolve": "false"},
+            headers={"Authorization": "Bearer " + token, "User-Agent": "LeadRadar/4.0"}).json()
+        statuses = body.get("statuses", []) if isinstance(body, dict) else []
+    else:
+        tag = re.sub(r"[^\w]", "", query, flags=re.UNICODE)
+        if not tag:
+            raise RuntimeError("Mastodon 未配置令牌时只能按话题标签搜索，关键词需要是字母/数字/汉字")
+        statuses = _get(f"https://{instance}/api/v1/timelines/tag/{requests.utils.quote(tag)}",
+                        params={"limit": min(40, max_items)}).json()
+    out = []
+    for st in statuses if isinstance(statuses, list) else []:
+        url, account = str(st.get("url") or st.get("uri") or ""), st.get("account") or {}
+        if not url.startswith("https://"):
+            continue
+        is_reply = bool(st.get("in_reply_to_id"))
+        text = _clean_markup(st.get("content"))
+        out.append(PublicItem("Mastodon评论" if is_reply else "Mastodon", text[:90], text, url,
+                              account.get("display_name") or account.get("acct") or "", st.get("created_at") or "",
+                              comment_url=url if is_reply else "", navigation_kind="direct" if is_reply else "",
+                              author_url=str(account.get("url") or "") if str(account.get("url") or "").startswith("https://") else "",
+                              metrics=clean_metrics({"like": st.get("favourites_count"), "repost": st.get("reblogs_count"),
+                                                     "comment": st.get("replies_count")})))
+    return out
+
+
+def fetch_v2ex(query: str, max_items: int = 30):
+    """V2EX (Chinese developer / indie-founder forum) via the public SOV2EX full-text search."""
+    body = _get("https://www.sov2ex.com/api/search", params={
+        "q": query, "size": min(50, max(1, max_items)), "sort": "created", "order": 0}).json()
+    out = []
+    for hit in body.get("hits", []):
+        src = hit.get("_source") or {}
+        tid, member = str(src.get("id") or ""), str(src.get("member") or "")
+        if not tid.isdigit():
+            continue
+        created = str(src.get("created") or "")
+        if created and not created.endswith("Z") and "+" not in created:
+            created += "+08:00"   # sov2ex returns Beijing time without an offset
+        out.append(PublicItem("V2EX", _clean_markup(src.get("title")), _clean_markup(src.get("content"))[:6000],
+                              f"https://www.v2ex.com/t/{tid}", member, created,
+                              author_url=f"https://www.v2ex.com/member/{member}" if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", member) else "",
+                              metrics=clean_metrics({"comment": src.get("replies")})))
+    return out
+
+
+def fetch_discourse(query: str, max_items: int = 30):
+    """Any public Discourse forum (DISCOURSE_SITES=forum.a.com,forum.b.com): newest matching posts."""
+    sites = [h for h in (_clean_host(x) for x in _csv_env("DISCOURSE_SITES")) if h][:8]
+    if not sites:
+        raise RuntimeError("未配置 DISCOURSE_SITES：在 .env 填写要监控的 Discourse 论坛域名，逗号隔开")
+    out, errors = [], []
+    for site in sites:
+        try:
+            body = _get(f"https://{site}/search.json", params={"q": query + " order:latest"},
+                        headers={"Accept": "application/json", "User-Agent": "LeadRadar/4.0"}).json()
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f"{site}: {str(exc)[:120]}")
+            continue
+        topics = {t.get("id"): t for t in body.get("topics", []) if isinstance(t, dict)}
+        for post in body.get("posts", [])[:max_items]:
+            topic = topics.get(post.get("topic_id")) or {}
+            slug, tid, number = str(topic.get("slug") or "topic"), post.get("topic_id"), post.get("post_number") or 1
+            if not str(tid).isdigit() or not re.fullmatch(r"[\w-]{1,200}", slug):
+                continue
+            url = f"https://{site}/t/{slug}/{tid}/{number}"
+            user = str(post.get("username") or "")
+            is_reply = int(number or 1) > 1
+            out.append(PublicItem(f"Discourse·{site}" + ("评论" if is_reply else ""), _clean_markup(topic.get("title")),
+                                  _clean_markup(post.get("blurb")), url, post.get("name") or user, post.get("created_at") or "",
+                                  post_url=f"https://{site}/t/{slug}/{tid}" if is_reply else "",
+                                  comment_url=url if is_reply else "", navigation_kind="direct" if is_reply else "",
+                                  author_url=f"https://{site}/u/{user}" if re.fullmatch(r"[\w.-]{1,60}", user) else "",
+                                  metrics=clean_metrics({"like": post.get("like_count")})))
+    if not out and errors:
+        raise RuntimeError("Discourse 请求失败：" + "；".join(errors))
+    return out
+
+
+_CCGP_ITEM = re.compile(r'<li>\s*<a href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>\s*(?:<p>(?P<summary>.*?)</p>)?\s*<span>(?P<meta>.*?)</span>', re.S)
+
+
+def fetch_ccgp(query: str, days: int = 30):
+    """中国政府采购网 tender / procurement notices (公开招标、询价、竞争性磋商、采购意向...).
+    A public notice of an organisation that is about to buy is the strongest B2B signal there is.
+    The site throttles frequent visits ("访问过于频繁"); keep monitoring intervals long."""
+    end = datetime.now(timezone.utc)
+    start = datetime.fromtimestamp(end.timestamp() - days * 86400, timezone.utc)
+    r = _get("https://search.ccgp.gov.cn/bxsearch", params={
+        "searchtype": 1, "page_index": 1, "bidSort": 0, "pinMu": 0, "bidType": 0, "dbselect": "bidx",
+        "kw": query, "start_time": start.strftime("%Y:%m:%d"), "end_time": end.strftime("%Y:%m:%d"),
+        "timeType": 6, "pppStatus": 0}, headers={"User-Agent": "Mozilla/5.0 LeadRadar/4.0"}, timeout=25,
+        redirect_hosts=("ccgp.gov.cn",))
+    page = r.content.decode("utf-8", "replace")
+    if "访问过于频繁" in page or "频繁访问" in page:
+        raise RuntimeError("中国政府采购网提示访问过于频繁，请过一段时间再试（监控间隔建议 3 小时以上）")
+    block = page.split('vT-srch-result-list-bid', 1)[-1].split('vT-srch-result-page', 1)[0]
+    out = []
+    for m in _CCGP_ITEM.finditer(block):
+        url = urljoin("https://www.ccgp.gov.cn/", html.unescape(m.group("url")).strip())
+        if (urlparse(url).hostname or "").rsplit(".", 3)[-3:] != ["ccgp", "gov", "cn"]:
+            continue
+        meta = _clean_markup(m.group("meta"))
+        buyer = re.search(r"采购人[:：]\s*([^|｜]+)", meta)
+        when = re.search(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", meta)
+        published = (f"{when.group(1)}-{int(when.group(2)):02d}-{int(when.group(3)):02d}T"
+                     f"{int(when.group(4) or 0):02d}:{when.group(5) or '00'}:00+08:00") if when else ""
+        title = _clean_markup(m.group("title"))
+        out.append(PublicItem("政府采购", title, (_clean_markup(m.group("summary") or "") + "\n" + meta).strip(),
+                              url, buyer.group(1).strip() if buyer else "", published))
+    return out

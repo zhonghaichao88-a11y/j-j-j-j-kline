@@ -15,6 +15,7 @@ from typing import Callable
 from urllib.parse import quote, urlparse, parse_qs
 
 from .adapters import PublicItem, clean_metrics
+from .intent import parse_cn_time
 
 SUPPORTED = {
     "xhs": "小红书", "douyin": "抖音", "weibo": "微博", "zhihu": "知乎",
@@ -955,7 +956,9 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                             except Exception:
                                 detail = {}
                             metrics.update(clean_metrics(detail))
-                            published = str(detail.get("published") or "")[:60]
+                            raw_time = str(detail.get("published") or "")[:60]
+                            # "3小时前" / "昨天 12:30" -> ISO, so leads sort and filter by real publish time
+                            published = parse_cn_time(raw_time) or raw_time
                             author = author or str(detail.get("author") or "")[:160]
                             author_url = author_url or safe_profile_url(platform, detail.get("authorHref") or "")
                             if comments_per_post:

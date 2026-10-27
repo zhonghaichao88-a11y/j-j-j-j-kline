@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, Column, Integer, String, Text, create_engine, delete, event, func, or_, select
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+from .intent import analyze
 from .browser_collector import (
     SUPPORTED as BROWSER_PLATFORMS, LABEL_TO_PLATFORM, canonical_post_url, collect_in_browser,
     locate_visible_comment, open_login_pages, safe_post_url,
@@ -39,13 +40,14 @@ from .adapters import (
     PLATFORM_ENV, PublicItem, demo_items, fetch_github, fetch_hackernews, fetch_platform,
     fetch_google_news, fetch_bing_news, fetch_bluesky, fetch_reddit_with_comments, fetch_github_with_comments,
     fetch_reddit_json, fetch_rss, fetch_x, fetch_youtube, item_key,
+    fetch_stackexchange, fetch_lemmy, fetch_mastodon, fetch_v2ex, fetch_discourse, fetch_ccgp,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
 # Fingerprint of the running code. start.ps1 computes the same hash over the same files
 # to tell whether the server on the port is this exact copy or an older one left running.
 BUILD_FILES = ("app/main.py", "app/browser_collector.py", "app/adapters.py", "app/netcheck.py", "app/relay.py",
-               "static/index.html")
+               "app/intent.py", "static/index.html")
 BUILD_ID = hashlib.sha256(b"".join((ROOT / f).read_bytes() for f in BUILD_FILES if (ROOT / f).exists())).hexdigest()[:16]
 load_dotenv(ROOT / ".env", override=False)
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(ROOT / "data"))).resolve()
@@ -108,6 +110,26 @@ class Item(Base):
     sentiment = Column(String(20), default="neutral")
     topics = Column(Text, default="[]")
     hashtags = Column(Text, default="[]")
+    lead_type = Column(String(20), default="")     # buyer / seller / question / other
+    reasons = Column(Text, default="[]")           # phrases that produced the score
+    follow_up_at = Column(String(40), default="")  # next follow-up reminder (ISO time)
+    contacted_at = Column(String(40), default="")
+    tags = Column(Text, default="[]")
+    updated_at = Column(String(40), default="")
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False, default="null")
+
+
+class ReplyTemplate(Base):
+    __tablename__ = "reply_templates"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    text = Column(Text, nullable=False)
+    created_at = Column(String(40))
 
 
 class SchemaMeta(Base):
@@ -137,6 +159,7 @@ class Monitor(Base):
     max_posts = Column(Integer, nullable=False, default=8)
     max_comments = Column(Integer, nullable=False, default=10)
     sort = Column(String(20), nullable=False, default="latest")
+    excludes = Column(Text, default="[]")
     active = Column(Boolean, nullable=False, default=True)
     created_at = Column(String(40), nullable=False)
     last_run_at = Column(String(40), default="")
@@ -178,6 +201,30 @@ class KeywordPatch(BaseModel):
 class StatusIn(BaseModel):
     status: str | None = None
     notes: str | None = Field(default=None, max_length=10000)
+    follow_up_at: str | None = Field(default=None, max_length=40)
+    tags: list[str] | None = Field(default=None, max_length=20)
+
+
+class BulkIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+    status: str | None = None
+    follow_up_at: str | None = Field(default=None, max_length=40)
+    add_tag: str | None = Field(default=None, max_length=30)
+    delete: bool = False
+
+
+class SettingsIn(BaseModel):
+    buyer_words: list[str] = Field(default_factory=list, max_length=200)
+    seller_words: list[str] = Field(default_factory=list, max_length=200)
+    exclude_words: list[str] = Field(default_factory=list, max_length=200)
+    blocked_authors: list[str] = Field(default_factory=list, max_length=500)
+    hide_sellers: bool = False
+    notify_min_score: int = Field(default=80, ge=0, le=100)
+
+
+class TemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class IngestIn(BaseModel):
@@ -186,7 +233,10 @@ class IngestIn(BaseModel):
     url: str | None = None
 
 
-PUBLIC_SEARCH_SOURCES = ("googlenews", "bingnews", "github", "hackernews", "reddit", "bluesky", "youtube")
+PUBLIC_SEARCH_SOURCES = ("googlenews", "bingnews", "github", "hackernews", "reddit", "bluesky", "youtube",
+                         "v2ex", "stackexchange", "lemmy", "mastodon", "discourse", "ccgp")
+# Authorized-JSON platform ids that clash with a built-in public source get this prefix.
+AUTHORIZED_PREFIXED = ("bluesky", "hackernews", "mastodon")
 
 
 class PlatformManualIn(BaseModel):
@@ -232,15 +282,24 @@ class MonitorIn(BaseModel):
     max_posts: int = Field(default=8, ge=1, le=20)
     max_comments: int = Field(default=10, ge=0, le=30)
     sort: Literal["latest", "relevance"] = "latest"
+    excludes: list[str] = Field(default_factory=list, max_length=30)
 
 
 class MonitorPatch(BaseModel):
-    active: bool
+    active: bool | None = None
+    query: str | None = Field(default=None, min_length=1, max_length=100)
+    platforms: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    interval_minutes: int | None = Field(default=None, ge=5, le=1440)
+    max_posts: int | None = Field(default=None, ge=1, le=20)
+    max_comments: int | None = Field(default=None, ge=0, le=30)
+    sort: Literal["latest", "relevance"] | None = None
+    excludes: list[str] | None = Field(default=None, max_length=30)
 
 
 class OnlineSearchIn(BaseModel):
     query: str = Field(min_length=1, max_length=300)
-    sources: list[str] = Field(default_factory=lambda: ["googlenews", "bingnews", "github", "hackernews"], min_length=1, max_length=7)
+    sources: list[str] = Field(default_factory=lambda: ["googlenews", "bingnews", "github", "hackernews"], min_length=1,
+                               max_length=len(PUBLIC_SEARCH_SOURCES))
 
 
 def _json_dict(raw):
@@ -266,26 +325,46 @@ def clean_words(words):
     return cleaned
 
 
-def classify(text):
-    """Transparent rule-based priority estimate, not a verified purchase probability."""
-    t = (text or "").casefold()
-    # Explicit negative intent overrides incidental positive phrases in the same text.
-    negatives = [
-        r"(?:没有|无|暂无|不想|不需要|无需|没打算|不考虑|拒绝|并非|不是).{0,4}(?:购买|采购|求购|买单|买入|购入)(?:需求|计划|意愿)?",
-        r"(?:没有|暂无|无|不需要).{0,3}(?:购买需求|采购需求|购买计划|采购计划)",
-        r"(?:不求|无需|别|不要).{0,3}推荐",
-        r"\b(?:not|never|no)\s+(?:looking\s+to\s+buy|buying|purchasing|interested\s+in\s+buying)\b",
-        r"\bno\s+(?:purchase|buying)\s+(?:intent|need)\b",
-    ]
-    if any(re.search(p, t) for p in negatives):
-        return "low", 10
-    high = [r"求购", r"求推荐", r"求报价", r"询价", r"采购", r"多少钱", r"有(人|公司|团队).{0,8}(?:接单|提供|做)",
-            r"找.{0,10}(?:供应商|团队|服务商)", r"寻找.{0,10}(?:解决方案|合作方)",
-            r"\b(?:looking\s+for|need\s+(?:a|an|some)|want\s+to\s+buy|request\s+a\s+quote|where\s+can\s+i\s+buy|recommend\s+(?:a|an))\b"]
-    if any(re.search(p, t) for p in high):
-        return "high", 90
-    medium = [r"想了解", r"有没有", r"怎么做", r"比较", r"试用", r"预算", r"接入", r"方案", r"\b(?:how\s+to|anyone|trial|evaluating|considering|budget)\b"]
-    return ("medium", 60) if any(re.search(p, t) for p in medium) else ("low", 20)
+def classify(text, **kwargs):
+    """(intent, score). Transparent rule-based priority estimate, see app/intent.py."""
+    result = analyze(text, **kwargs)
+    return result["intent"], result["score"]
+
+
+SETTING_DEFAULTS = {"buyer_words": [], "seller_words": [], "exclude_words": [], "blocked_authors": [],
+                    "hide_sellers": False, "notify_min_score": 80}
+
+
+def get_settings(session=None):
+    def load(s):
+        rows = {r.key: r.value for r in s.scalars(select(Setting)).all()}
+        out = dict(SETTING_DEFAULTS)
+        for key in out:
+            if key in rows:
+                try:
+                    out[key] = json.loads(rows[key])
+                except ValueError:
+                    pass
+        return out
+    if session is not None:
+        return load(session)
+    with Session() as s:
+        return load(s)
+
+
+def analyze_item(source, title, text, published_at="", settings=None):
+    settings = settings or SETTING_DEFAULTS
+    result = analyze((title or "") + " " + (text or ""), is_comment=(source or "").endswith("评论"),
+                     published_at=published_at or "", custom_buyer=settings.get("buyer_words") or (),
+                     custom_seller=settings.get("seller_words") or ())
+    if source in ("Google News", "Bing News"):
+        # News reports are not customer purchase requests.
+        result.update(intent="low", score=0, lead_type="other", reasons=["新闻资讯，不是客户需求"])
+    elif source == "政府采购":
+        # A public procurement notice is an organisation announcing it will buy.
+        result.update(intent="high", score=max(result["score"], 90), lead_type="buyer",
+                      reasons=["政府/单位采购公告"] + [r for r in result["reasons"] if not r.startswith("疑似商家")])
+    return result
 
 
 def enrich(text):
@@ -312,6 +391,9 @@ def init_db():
         "comment_id": "VARCHAR(100) DEFAULT ''", "comment_url": "TEXT DEFAULT ''",
         "navigation_kind": "VARCHAR(20) DEFAULT ''", "author_url": "TEXT DEFAULT ''",
         "metrics": "TEXT DEFAULT '{}'", "metrics_updated_at": "VARCHAR(40) DEFAULT ''",
+        "lead_type": "VARCHAR(20) DEFAULT ''", "reasons": "TEXT DEFAULT '[]'",
+        "follow_up_at": "VARCHAR(40) DEFAULT ''", "contacted_at": "VARCHAR(40) DEFAULT ''",
+        "tags": "TEXT DEFAULT '[]'", "updated_at": "VARCHAR(40) DEFAULT ''",
     }
     monitor_columns = {c["name"] for c in inspect(engine).get_columns("monitors")}
     with engine.begin() as con:
@@ -320,6 +402,8 @@ def init_db():
                 con.exec_driver_sql(f"ALTER TABLE items ADD COLUMN {col} {decl}")
         if "sort" not in monitor_columns:
             con.exec_driver_sql("ALTER TABLE monitors ADD COLUMN sort VARCHAR(20) DEFAULT 'latest' NOT NULL")
+        if "excludes" not in monitor_columns:
+            con.exec_driver_sql("ALTER TABLE monitors ADD COLUMN excludes TEXT DEFAULT '[]'")
     _migrate_browser_dedup_keys()
     _migrate_unescape_html()
     # Repair misleading v3 fake fragments without touching the stable dedup key.
@@ -330,13 +414,15 @@ def init_db():
                 old.post_url, old.url, old.navigation_kind = base, base, "assisted"
     with Session.begin() as s:
         version = s.get(SchemaMeta, "rule_score_version")
-        if version is None or version.value != "2.1":
+        if version is None or version.value != SCORE_VERSION:
+            settings = get_settings(s)
             for old_item in s.scalars(select(Item)).all():
-                old_item.intent, old_item.score = classify((old_item.title or "") + " " + (old_item.text or ""))
+                _apply_analysis(old_item, analyze_item(old_item.source, old_item.title, old_item.text,
+                                                       old_item.published_at, settings))
             if version is None:
-                s.add(SchemaMeta(key="rule_score_version", value="2.1"))
+                s.add(SchemaMeta(key="rule_score_version", value=SCORE_VERSION))
             else:
-                version.value = "2.1"
+                version.value = SCORE_VERSION
     with Session.begin() as s:
         if not s.scalar(select(func.count()).select_from(Keyword)):
             s.add(Keyword(name="AI 获客", terms=json.dumps(["GPT", "AI客服", "AI 客服", "自动化获客"], ensure_ascii=False),
@@ -345,6 +431,23 @@ def init_db():
         with Session() as s:
             if not s.scalar(select(func.count()).select_from(Item)):
                 save_items(demo_items())
+
+
+SCORE_VERSION = "4.0"
+
+
+def _apply_analysis(item, result):
+    item.intent, item.score, item.lead_type = result["intent"], result["score"], result["lead_type"]
+    item.reasons = json.dumps(result["reasons"], ensure_ascii=False)
+
+
+def rescore_all():
+    with Session.begin() as s:
+        settings = get_settings(s)
+        rows = s.scalars(select(Item)).all()
+        for item in rows:
+            _apply_analysis(item, analyze_item(item.source, item.title, item.text, item.published_at, settings))
+        return len(rows)
 
 
 def _browser_dedup_key(source: str, url: str, post_url: str, author: str, text: str):
@@ -400,18 +503,45 @@ def active_keywords(session):
     return [(json_list(k.terms), json_list(k.excludes)) for k in session.scalars(select(Keyword).where(Keyword.active.is_(True))).all()]
 
 
-def save_items(data, *, manual_query="", return_ids=False):
+BROWSER_WORK_SOURCES = {label + "作品" for label in BROWSER_PLATFORMS.values()}
+
+
+def _norm(text):
+    return re.sub(r"\s+", "", (text or "").casefold())
+
+
+def _relevant(item, query):
+    """Public APIs often return loosely related hits (Lemmy/HN match URLs, Bluesky stems words).
+    Keep a post only when one of the query words really appears in it. Comments are kept: they
+    were collected *because* their post matched. Browser search pages are trusted as-is."""
+    if (item.source or "").endswith("评论") or item.source in BROWSER_WORK_SOURCES or item.source in ("政府采购", "Demo"):
+        return True
+    hay = _norm((item.title or "") + " " + (item.text or ""))
+    words = [_norm(w) for w in re.split(r"[\s,，、|]+", query or "") if _norm(w)]
+    return not words or any(w in hay for w in words) or _norm(query) in hay
+
+
+def save_items(data, *, manual_query="", return_ids=False, excludes=()):
     """Return matched and new insert counts; preserve existing notes/status."""
     matched, inserted = 0, 0
     saved_ids = []
     new_high = []
     with Session.begin() as s:
         groups = active_keywords(s)
+        settings = get_settings(s)
+        blocked = {_norm(x) for x in settings["blocked_authors"] if _norm(x)}
+        drop_words = [w.casefold() for w in list(settings["exclude_words"]) + list(excludes or ()) if w and w.strip()]
         for item in data:
             hay = ((item.title or "") + " " + (item.text or "")).casefold()
+            if blocked and (_norm(item.author) in blocked or _norm(item.author_url) in blocked):
+                continue
+            if drop_words and any(w in hay for w in drop_words):
+                continue
+            if manual_query and not _relevant(item, manual_query):
+                continue
             terms_found = set()
-            for terms, excludes in groups:
-                if any(w.casefold() in hay for w in excludes):
+            for terms, kw_excludes in groups:
+                if any(w.casefold() in hay for w in kw_excludes):
                     continue
                 terms_found.update(w for w in terms if w.casefold() in hay)
             # Manual online search is independent of stored keyword groups.
@@ -444,10 +574,10 @@ def save_items(data, *, manual_query="", return_ids=False):
                         existing.url = (item.url or "")[:2000]
                 saved_ids.append(old_id)
                 continue
-            intent, score = classify(hay)
-            if item.source in ("Google News", "Bing News"):
-                # News reports are not customer purchase requests.
-                intent, score = "low", 0
+            result = analyze_item(item.source, item.title, item.text, item.published_at, settings)
+            if settings["hide_sellers"] and result["lead_type"] == "seller":
+                continue
+            intent, score = result["intent"], result["score"]
             sentiment, topics, hashtags = enrich(hay)
             obj = Item(external_id=key, source=item.source, title=(item.title or "")[:1000], text=(item.text or "")[:20000],
                        url=(item.url or "")[:2000], post_url=(item.post_url or "")[:2000],
@@ -457,22 +587,58 @@ def save_items(data, *, manual_query="", return_ids=False):
                        author_url=(item.author_url or "")[:600], metrics=json.dumps(item.metrics or {}, ensure_ascii=False),
                        metrics_updated_at=NOW() if item.metrics else "",
                        matched_terms=json.dumps(sorted(terms_found), ensure_ascii=False), intent=intent, score=score,
-                       status="new", notes="", created_at=NOW(), sentiment=sentiment,
+                       lead_type=result["lead_type"], reasons=json.dumps(result["reasons"], ensure_ascii=False),
+                       status="new", notes="", created_at=NOW(), updated_at=NOW(), sentiment=sentiment,
                        topics=json.dumps(topics, ensure_ascii=False), hashtags=json.dumps(hashtags, ensure_ascii=False))
             s.add(obj)
             s.flush()
             saved_ids.append(obj.id)
             inserted += 1
-            if intent == "high" and item.source != "Demo":
-                new_high.append({"source": item.source, "title": (item.title or "")[:200], "url": item.url, "score": score})
-    webhook = os.getenv("ALERT_WEBHOOK_URL", "")
-    if new_high and urlparse(webhook).scheme == "https":
-        try:
-            requests.post(webhook, json={"event": "new_high_intent_leads", "count": len(new_high),
-                                         "leads": new_high[:20]}, timeout=8)
-        except requests.RequestException:
-            pass  # Do not lose collected data when the optional notification service fails.
+            if intent == "high" and score >= settings["notify_min_score"] and item.source != "Demo":
+                new_high.append({"source": item.source, "title": (item.title or "")[:200], "text": (item.text or "")[:200],
+                                 "author": item.author or "", "url": item.comment_url or item.url, "score": score,
+                                 "reasons": result["reasons"][:4]})
+    if new_high:
+        # Never block or lose collected data because the optional notification service is slow or down.
+        threading.Thread(target=send_alert, args=(new_high,), daemon=True).start()
     return (matched, inserted, saved_ids) if return_ids else (matched, inserted)
+
+
+def _alert_text(leads):
+    lines = [f"Lead Radar 发现 {len(leads)} 条高意向线索"]
+    for x in leads[:10]:
+        lines.append(f"\n【{x['source']}】{x['score']}分 {x.get('author') or ''}\n{(x.get('title') or x.get('text') or '')[:120]}"
+                     f"\n原因：{'、'.join(x.get('reasons') or [])}\n{x['url']}")
+    return "\n".join(lines)
+
+
+def alert_payload(url, leads):
+    """Webhook body in the format the receiving service expects (企业微信/钉钉/飞书/Server酱/Slack/Discord)."""
+    host = (urlparse(url).hostname or "").lower()
+    text = _alert_text(leads)
+    if host == "qyapi.weixin.qq.com":
+        return {"msgtype": "text", "text": {"content": text[:2000]}}
+    if host == "oapi.dingtalk.com":
+        return {"msgtype": "text", "text": {"content": text[:2000]}}
+    if host.endswith("feishu.cn") or host.endswith("larksuite.com"):
+        return {"msg_type": "text", "content": {"text": text[:4000]}}
+    if host.endswith("ftqq.com"):
+        return {"title": f"Lead Radar：{len(leads)} 条高意向线索", "desp": text.replace("\n", "\n\n")[:30000]}
+    if host == "hooks.slack.com":
+        return {"text": text[:3000]}
+    if host in ("discord.com", "discordapp.com"):
+        return {"content": text[:1900]}
+    return {"event": "new_high_intent_leads", "count": len(leads), "leads": leads[:20], "text": text}
+
+
+def send_alert(leads, url=None):
+    url = url or os.getenv("ALERT_WEBHOOK_URL", "")
+    if not leads or urlparse(url).scheme != "https":
+        return None
+    try:
+        return requests.post(url, json=alert_payload(url, leads), timeout=10)
+    except requests.RequestException:
+        return None
 
 
 def log_ingest(source, query, fetched=0, matched=0, inserted=0, error=""):
@@ -505,16 +671,28 @@ def available_sources():
     sources = [
         {"id": "googlenews", "name": "Google News 资讯搜索（非客户名单）", "configured": True, "kind": "public", "note": "公开 RSS；可能受地区和网络限制"},
         {"id": "bingnews", "name": "Bing News 资讯搜索（非客户名单）", "configured": True, "kind": "public", "note": "公开 RSS；可能受地区和网络限制"},
-        {"id": "reddit", "name": "Reddit 公开搜索", "configured": True, "kind": "public", "note": "可能受 Reddit 访问限制"},
+        {"id": "reddit", "name": "Reddit 帖子", "configured": True, "kind": "public",
+         "note": ("已配置官方 OAuth" if os.getenv("REDDIT_CLIENT_ID") and os.getenv("REDDIT_CLIENT_SECRET")
+                  else "Reddit 已基本禁止未登录访问；在 .env 填 REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET（免费）后才稳定")},
         {"id": "github", "name": "GitHub 公开 Issues", "configured": True, "kind": "public", "note": "未配置令牌时有请求限额"},
         {"id": "hackernews", "name": "Hacker News 帖子与匹配评论", "configured": True, "kind": "public"},
         {"id": "bluesky", "name": "Bluesky 公开帖子", "configured": True, "kind": "public", "note": "公开 AppView，部分服务器仍可能要求认证"},
+        {"id": "v2ex", "name": "V2EX 帖子（中文技术/创业社区）", "configured": True, "kind": "public", "note": "通过 SOV2EX 公开全文搜索，按发布时间排序"},
+        {"id": "ccgp", "name": "中国政府采购网 招标/采购公告", "configured": True, "kind": "public",
+         "note": "最近 30 天的公开采购公告（采购人即潜在客户）；网站限制访问频率，监控建议 3 小时以上"},
+        {"id": "stackexchange", "name": "Stack Overflow / Stack Exchange 提问", "configured": True, "kind": "public",
+         "note": "官方 API，免密钥每天约 300 次；STACKEXCHANGE_SITES 可选站点"},
+        {"id": "lemmy", "name": "Lemmy 帖子与评论", "configured": True, "kind": "public", "note": "联邦社区，LEMMY_INSTANCE 可换实例"},
+        {"id": "mastodon", "name": "Mastodon 公开嘟文", "configured": True, "kind": "public",
+         "note": "未配置 MASTODON_ACCESS_TOKEN 时按话题标签(#关键词)读取"},
+        {"id": "discourse", "name": "Discourse 论坛", "configured": bool(os.getenv("DISCOURSE_SITES", "").strip()), "kind": "key",
+         "note": "在 .env 的 DISCOURSE_SITES 填写论坛域名（逗号隔开）"},
         {"id": "rss", "name": "RSS / Atom 订阅", "configured": True, "kind": "public"},
         {"id": "demo", "name": "演示数据（不是真实客户）", "configured": True, "kind": "demo"},
         {"id": "youtube", "name": "YouTube 官方 API", "configured": bool(os.getenv("YOUTUBE_API_KEY")), "kind": "key"},
         {"id": "x", "name": "X 官方 API", "configured": bool(os.getenv("X_BEARER_TOKEN")), "kind": "key"},
     ]
-    sources += [{"id": "authorized_" + k if k in ("bluesky", "hackernews") else k,
+    sources += [{"id": "authorized_" + k if k in AUTHORIZED_PREFIXED else k,
                  "name": name + " 授权 JSON 接口", "configured": bool(os.getenv(env)), "kind": "authorized"}
                 for k, (name, env, _) in PLATFORM_ENV.items()]
     return sources
@@ -539,22 +717,8 @@ def do_ingest(inp):
             data = demo_items()
         elif source == "rss":
             data = fetch_rss(_validate_rss_url(inp.url.strip()), source="RSS")
-        elif source == "googlenews":
-            data = fetch_google_news(query)
-        elif source == "bingnews":
-            data = fetch_bing_news(query)
-        elif source == "reddit":
-            data = fetch_reddit_json(query)
-        elif source == "github":
-            data = fetch_github(query)
-        elif source == "hackernews":
-            data = fetch_hackernews(query)
-        elif source == "bluesky":
-            data = fetch_bluesky(query)
-        elif source == "youtube":
-            data = fetch_youtube(query)
-        elif source == "x":
-            data = fetch_x(query)
+        elif source in SEARCH_PROVIDERS:
+            data = SEARCH_PROVIDERS[source](query)
         else:
             data = fetch_platform(source.removeprefix("authorized_"), query)
         matched, inserted = save_items(data)
@@ -592,18 +756,24 @@ def monitor_source_catalog():
     return rows
 
 
+# One registry for every public/key API source (single search, online search, monitors).
+# Looked up by name at call time so tests can monkeypatch the fetch_* functions.
+SEARCH_PROVIDERS = {name: (lambda q, _f=fn: globals()[_f](q)) for name, fn in {
+    "googlenews": "fetch_google_news", "bingnews": "fetch_bing_news", "reddit": "fetch_reddit_json",
+    "github": "fetch_github", "hackernews": "fetch_hackernews", "bluesky": "fetch_bluesky",
+    "youtube": "fetch_youtube", "x": "fetch_x", "v2ex": "fetch_v2ex", "stackexchange": "fetch_stackexchange",
+    "lemmy": "fetch_lemmy", "mastodon": "fetch_mastodon", "discourse": "fetch_discourse", "ccgp": "fetch_ccgp",
+}.items()}
+
+
 def monitor_fetch(source: str, query: str, max_posts: int, max_comments: int):
     """Bounded direct public/authorized API polling. Error is surfaced to operator."""
     providers = {
-        "googlenews": fetch_google_news,
-        "bingnews": fetch_bing_news,
-        "hackernews": fetch_hackernews,
-        "bluesky": fetch_bluesky,
+        **SEARCH_PROVIDERS,
         "reddit": lambda q: fetch_reddit_with_comments(q, max_posts=max_posts, max_comments=max_comments),
         "github": lambda q: fetch_github_with_comments(q, max_issues=max_posts, max_comments=max_comments),
         "youtube": lambda q: fetch_youtube(q, include_comments=True,
                                           max_videos=max_posts, max_comments=max_comments),
-        "x": fetch_x,
     }
     if source in providers:
         return providers[source](query)[:max(50, max_posts * (max_comments + 1))]
@@ -682,7 +852,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="3.3.0", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.0.0", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -724,7 +894,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "3.3.0", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.0.0", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -792,18 +962,17 @@ def delete_keyword(kid: int):
 
 
 def item_dict(item):
-    fields = ("id", "source", "title", "text", "url", "post_url", "comment_id", "comment_url", "navigation_kind", "author", "author_url", "published_at", "intent", "score", "status", "notes", "created_at", "sentiment", "metrics_updated_at")
+    fields = ("id", "source", "title", "text", "url", "post_url", "comment_id", "comment_url", "navigation_kind", "author", "author_url", "published_at", "intent", "score", "status", "notes", "created_at", "sentiment", "metrics_updated_at",
+              "lead_type", "follow_up_at", "contacted_at", "updated_at")
     out = {f: getattr(item, f) for f in fields}
     out["metrics"] = _json_dict(item.metrics)
-    for f in ("matched_terms", "topics", "hashtags"):
+    for f in ("matched_terms", "topics", "hashtags", "reasons", "tags"):
         out[f] = json_list(getattr(item, f))
     return out
 
 
-@app.get("/api/items")
-def items(q: str = "", source: str = "", status: str = "", intent: str = "", author: str = "",
-          sentiment: str = "", platform: str = "", kind: str = "",
-          limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+def item_query(q="", source="", status="", intent="", author="", sentiment="", platform="", kind="",
+               lead_type="", days=0, follow_up="", tag="", sort="score"):
     stmt = select(Item)
     if platform:  # platform display name, e.g. 小红书 / Reddit
         stmt = stmt.where(or_(Item.source == platform, Item.source.like(platform[:60] + "%")))
@@ -813,10 +982,13 @@ def items(q: str = "", source: str = "", status: str = "", intent: str = "", aut
         stmt = stmt.where(Item.source.not_like("%评论"))
     if q:
         pattern = f"%{q[:200]}%"
-        stmt = stmt.where(or_(Item.title.ilike(pattern), Item.text.ilike(pattern), Item.author.ilike(pattern)))
+        stmt = stmt.where(or_(Item.title.ilike(pattern), Item.text.ilike(pattern), Item.author.ilike(pattern),
+                              Item.notes.ilike(pattern)))
     if source:
         stmt = stmt.where(Item.source == source)
-    if status:
+    if status == "open":  # everything still worth working on
+        stmt = stmt.where(Item.status.in_(("new", "saved", "contacted", "replied")))
+    elif status:
         stmt = stmt.where(Item.status == status)
     if intent:
         stmt = stmt.where(Item.intent == intent)
@@ -824,9 +996,43 @@ def items(q: str = "", source: str = "", status: str = "", intent: str = "", aut
         stmt = stmt.where(Item.author.ilike(f"%{author[:100]}%"))
     if sentiment:
         stmt = stmt.where(Item.sentiment == sentiment)
+    if lead_type == "not_seller":
+        stmt = stmt.where(or_(Item.lead_type.is_(None), Item.lead_type != "seller"))
+    elif lead_type:
+        stmt = stmt.where(Item.lead_type == lead_type)
+    if days:
+        stmt = stmt.where(Item.created_at >= (datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
+    if follow_up == "due":
+        stmt = stmt.where(Item.follow_up_at != "", Item.follow_up_at.is_not(None), Item.follow_up_at <= NOW(),
+                          Item.status.not_in(("won", "ignored")))
+    elif follow_up == "scheduled":
+        stmt = stmt.where(Item.follow_up_at != "", Item.follow_up_at.is_not(None))
+    if tag:
+        stmt = stmt.where(Item.tags.like('%' + json.dumps(tag[:30], ensure_ascii=False) + '%'))
+    order = {"newest": (Item.id.desc(),), "published": (Item.published_at.desc(), Item.id.desc()),
+             "follow_up": (Item.follow_up_at, Item.id.desc())}.get(sort, (Item.score.desc(), Item.id.desc()))
+    return stmt.order_by(*order)
+
+
+@app.get("/api/items")
+def items(q: str = "", source: str = "", status: str = "", intent: str = "", author: str = "",
+          sentiment: str = "", platform: str = "", kind: str = "", lead_type: str = "",
+          days: int = Query(0, ge=0, le=3650), follow_up: str = "", tag: str = "",
+          sort: Literal["score", "newest", "published", "follow_up"] = "score",
+          limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    stmt = item_query(q, source, status, intent, author, sentiment, platform, kind, lead_type, days, follow_up, tag, sort)
     with Session() as s:
-        rows = s.scalars(stmt.order_by(Item.score.desc(), Item.id.desc()).offset(offset).limit(limit)).all()
+        rows = s.scalars(stmt.offset(offset).limit(limit)).all()
         return [item_dict(x) for x in rows]
+
+
+@app.get("/api/items/count")
+def items_count(q: str = "", source: str = "", status: str = "", intent: str = "", author: str = "",
+                sentiment: str = "", platform: str = "", kind: str = "", lead_type: str = "",
+                days: int = Query(0, ge=0, le=3650), follow_up: str = "", tag: str = ""):
+    stmt = item_query(q, source, status, intent, author, sentiment, platform, kind, lead_type, days, follow_up, tag)
+    with Session() as s:
+        return {"count": s.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))}
 
 
 @app.get("/api/items/{item_id}")
@@ -846,12 +1052,197 @@ def update_item(item_id: int, patch: StatusIn):
         item = s.get(Item, item_id)
         if item is None:
             raise HTTPException(404, "线索不存在")
-        if patch.status is not None:
-            item.status = patch.status
-        if patch.notes is not None:
-            item.notes = patch.notes
+        _patch_item(item, status=patch.status, notes=patch.notes, follow_up_at=patch.follow_up_at, tags=patch.tags)
         s.flush()
         return item_dict(item)
+
+
+def _clean_time(value):
+    """'' clears; otherwise any ISO date/time ('2026-10-30' or '2026-10-30T09:00') is stored as UTC ISO."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(422, "跟进时间格式无效") from exc
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone(timedelta(hours=8)))  # the console is used in China time
+    return when.astimezone(timezone.utc).isoformat()
+
+
+def _patch_item(item, status=None, notes=None, follow_up_at=None, tags=None, add_tag=None):
+    if status is not None:
+        if status not in STATUSES:
+            raise HTTPException(422, "跟进状态无效")
+        if status == "contacted" and item.status != "contacted" and not item.contacted_at:
+            item.contacted_at = NOW()
+        if status in ("won", "ignored"):
+            item.follow_up_at = ""
+        item.status = status
+    if notes is not None:
+        item.notes = notes
+    if follow_up_at is not None:
+        item.follow_up_at = _clean_time(follow_up_at)
+    if tags is not None or add_tag:
+        current = tags if tags is not None else json_list(item.tags)
+        if add_tag:
+            current = list(current) + [add_tag]
+        cleaned = list(dict.fromkeys(t.strip()[:30] for t in current if isinstance(t, str) and t.strip()))[:20]
+        item.tags = json.dumps(cleaned, ensure_ascii=False)
+    item.updated_at = NOW()
+
+
+@app.post("/api/items/bulk")
+def bulk_items(inp: BulkIn):
+    """Same change for many leads at once: status, follow-up time, a tag, or delete."""
+    with Session.begin() as s:
+        rows = s.scalars(select(Item).where(Item.id.in_(inp.ids))).all()
+        for item in rows:
+            if inp.delete:
+                s.delete(item)
+            else:
+                _patch_item(item, status=inp.status, follow_up_at=inp.follow_up_at, add_tag=inp.add_tag)
+        return {"updated": len(rows), "deleted": inp.delete}
+
+
+@app.get("/api/settings")
+def read_settings():
+    return get_settings()
+
+
+@app.put("/api/settings")
+def write_settings(inp: SettingsIn):
+    data = inp.model_dump()
+    for key in ("buyer_words", "seller_words", "exclude_words", "blocked_authors"):
+        data[key] = list(dict.fromkeys(w.strip()[:100] for w in data[key] if w and w.strip()))
+    with Session.begin() as s:
+        old = get_settings(s)
+        for key, value in data.items():
+            row = s.get(Setting, key)
+            if row is None:
+                s.add(Setting(key=key, value=json.dumps(value, ensure_ascii=False)))
+            else:
+                row.value = json.dumps(value, ensure_ascii=False)
+    rescored = 0
+    if data["buyer_words"] != old["buyer_words"] or data["seller_words"] != old["seller_words"]:
+        rescored = rescore_all()  # custom intent words apply to leads already saved, too
+    return {**get_settings(), "rescored": rescored}
+
+
+@app.post("/api/settings/block-author")
+def block_author(item_id: int):
+    """Hide a competitor / spam account: future content is skipped and its saved leads are ignored."""
+    with Session.begin() as s:
+        item = s.get(Item, item_id)
+        if item is None:
+            raise HTTPException(404, "线索不存在")
+        name = (item.author_url or item.author or "").strip()
+        if not name:
+            raise HTTPException(422, "这条线索没有作者信息")
+        settings = get_settings(s)
+        blocked = list(dict.fromkeys(settings["blocked_authors"] + [name]))
+        row = s.get(Setting, "blocked_authors")
+        if row is None:
+            s.add(Setting(key="blocked_authors", value=json.dumps(blocked, ensure_ascii=False)))
+        else:
+            row.value = json.dumps(blocked, ensure_ascii=False)
+        cond = Item.author_url == item.author_url if item.author_url else Item.author == item.author
+        hidden = 0
+        for other in s.scalars(select(Item).where(cond, Item.status == "new")).all():
+            other.status, other.updated_at = "ignored", NOW()
+            hidden += 1
+        return {"blocked": name, "ignored": hidden}
+
+
+def template_dict(t):
+    return {"id": t.id, "name": t.name, "text": t.text, "created_at": t.created_at}
+
+
+DEFAULT_TEMPLATES = [
+    ("评论区回复", "你好 {author}，看到你在问「{keyword}」，我们正好在做这个，可以免费给你出个方案，方便的话私信我～"),
+    ("私信开场", "您好，我是 XX 的顾问。看到您在{platform}提到「{title}」，想了解下您现在的具体需求和预算，我可以发几个案例给您参考。"),
+    ("英文回复", "Hi {author}, saw your post about {keyword}. We help teams with exactly this — happy to share a quick demo if useful."),
+]
+
+
+@app.get("/api/templates")
+def list_templates():
+    with Session.begin() as s:
+        if not s.scalar(select(func.count()).select_from(ReplyTemplate)) and s.get(SchemaMeta, "templates_seeded") is None:
+            for name, text in DEFAULT_TEMPLATES:
+                s.add(ReplyTemplate(name=name, text=text, created_at=NOW()))
+            s.add(SchemaMeta(key="templates_seeded", value="4.0"))
+            s.flush()
+        return [template_dict(t) for t in s.scalars(select(ReplyTemplate).order_by(ReplyTemplate.id)).all()]
+
+
+@app.post("/api/templates", status_code=201)
+def add_template(inp: TemplateIn):
+    with Session.begin() as s:
+        if s.scalar(select(func.count()).select_from(ReplyTemplate)) >= 50:
+            raise HTTPException(400, "最多保存 50 条话术")
+        t = ReplyTemplate(name=inp.name.strip(), text=inp.text.strip(), created_at=NOW())
+        s.add(t)
+        s.flush()
+        return template_dict(t)
+
+
+@app.put("/api/templates/{tid}")
+def edit_template(tid: int, inp: TemplateIn):
+    with Session.begin() as s:
+        t = s.get(ReplyTemplate, tid)
+        if t is None:
+            raise HTTPException(404, "话术不存在")
+        t.name, t.text = inp.name.strip(), inp.text.strip()
+        return template_dict(t)
+
+
+@app.delete("/api/templates/{tid}")
+def delete_template(tid: int):
+    with Session.begin() as s:
+        t = s.get(ReplyTemplate, tid)
+        if t is None:
+            raise HTTPException(404, "话术不存在")
+        s.delete(t)
+    return {"ok": True}
+
+
+@app.get("/api/overview")
+def overview(days: int = Query(14, ge=1, le=90)):
+    """Numbers for the dashboard: today, follow-ups due, funnel, per-day and per-platform counts."""
+    now = datetime.now(timezone.utc)
+    cn = timezone(timedelta(hours=8))
+    today = now.astimezone(cn).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+    since = (now - timedelta(days=days)).isoformat()
+    with Session() as s:
+        count = lambda *conds: s.scalar(select(func.count()).select_from(Item).where(Item.source != "Demo", *conds)) or 0
+        out = {
+            "today_new": count(Item.created_at >= today),
+            "today_high": count(Item.created_at >= today, Item.intent == "high"),
+            "high_open": count(Item.intent == "high", Item.status.in_(("new", "saved"))),
+            "follow_up_due": count(Item.follow_up_at != "", Item.follow_up_at.is_not(None), Item.follow_up_at <= NOW(),
+                                   Item.status.not_in(("won", "ignored"))),
+            "sellers": count(Item.lead_type == "seller"),
+            "total": count(),
+            "funnel": {st: count(Item.status == st) for st in ("new", "saved", "contacted", "replied", "won", "ignored")},
+            "monitors_active": s.scalar(select(func.count()).select_from(Monitor).where(Monitor.active.is_(True))) or 0,
+        }
+        daily, platforms = collections.Counter(), collections.Counter()
+        daily_high = collections.Counter()
+        for created, source, intent in s.execute(select(Item.created_at, Item.source, Item.intent).where(
+                Item.created_at >= since, Item.source != "Demo")).all():
+            try:
+                day = datetime.fromisoformat(created).astimezone(cn).strftime("%m-%d")
+            except (TypeError, ValueError):
+                continue
+            daily[day] += 1
+            daily_high[day] += intent == "high"
+            platforms[_platform_of(source or "")] += 1
+    days_list = [(now.astimezone(cn) - timedelta(days=i)).strftime("%m-%d") for i in range(days - 1, -1, -1)]
+    out["daily"] = [{"day": d, "count": daily[d], "high": daily_high[d]} for d in days_list]
+    out["platforms"] = [{"platform": k, "count": v} for k, v in platforms.most_common(12)]
+    return out
 
 
 @app.post("/api/platforms/manual-save", status_code=201)
@@ -945,13 +1336,13 @@ def comment_locator_status(job_id: str, request: Request):
 
 
 def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts: int, max_comments: int,
-                        sort: str = "latest"):
+                        sort: str = "latest", excludes=()):
     def event(platform: str, state: str, batch: list[PublicItem], message: str):
         inserted = matched = 0
         error = ""
         if batch:
             try:
-                matched, inserted = save_items(batch, manual_query=query)
+                matched, inserted = save_items(batch, manual_query=query, excludes=excludes)
             except Exception as exc:
                 error = "数据库保存失败：" + str(exc)[:200]
         with BROWSER_JOB_LOCK:
@@ -1009,7 +1400,7 @@ def _source_name(source_id: str) -> str:
     return next((x["name"] for x in monitor_source_catalog() if x["id"] == source_id), source_id)
 
 
-def _start_search_job(query: str, platforms: list[str], max_posts: int, max_comments: int, sort: str):
+def _start_search_job(query: str, platforms: list[str], max_posts: int, max_comments: int, sort: str, excludes=()):
     with BROWSER_JOB_LOCK:
         if any(job["status"] == "running" for job in BROWSER_JOBS.values()):
             raise HTTPException(409, "已有一个搜索任务正在进行，请等它完成")
@@ -1025,7 +1416,7 @@ def _start_search_job(query: str, platforms: list[str], max_posts: int, max_comm
             if old != jid and BROWSER_JOBS[old]["status"] == "finished":
                 del BROWSER_JOBS[old]
     threading.Thread(target=_browser_job_runner,
-                     args=(jid, query, platforms, max_posts, max_comments, sort), daemon=True).start()
+                     args=(jid, query, platforms, max_posts, max_comments, sort, excludes), daemon=True).start()
     return {"id": jid, "query": query, "status": "running"}
 
 
@@ -1035,6 +1426,7 @@ class SearchNowIn(BaseModel):
     max_posts: int = Field(default=10, ge=1, le=20)
     max_comments: int = Field(default=20, ge=0, le=30)
     sort: Literal["latest", "relevance"] = "latest"
+    excludes: list[str] = Field(default_factory=list, max_length=30)
 
 
 @app.post("/api/search-now", status_code=202)
@@ -1050,7 +1442,7 @@ def search_now(inp: SearchNowIn, request: Request):
         raise HTTPException(422, "以下来源尚未配置或不可用：" + "、".join(missing))
     if any(p in BROWSER_PLATFORMS for p in platforms):
         _require_local_browser(request)
-    return _start_search_job(query, platforms, inp.max_posts, inp.max_comments, inp.sort)
+    return _start_search_job(query, platforms, inp.max_posts, inp.max_comments, inp.sort, clean_words(inp.excludes))
 
 
 class BrowserLoginIn(BaseModel):
@@ -1096,7 +1488,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="3.3.0", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.0.0", build=BUILD_ID, root=str(ROOT))
     return result
 
 
@@ -1118,6 +1510,7 @@ def monitor_dict(m: Monitor):
     return {"id": m.id, "query": m.query, "platforms": json_list(m.platforms),
             "interval_minutes": m.interval_minutes, "max_posts": m.max_posts,
             "max_comments": m.max_comments, "sort": m.sort or "latest", "active": bool(m.active),
+            "excludes": json_list(m.excludes),
             "created_at": m.created_at, "last_run_at": m.last_run_at,
             "last_success_at": m.last_success_at, "next_run_at": m.next_run_at,
             "last_status": m.last_status, "last_error": m.last_error,
@@ -1158,11 +1551,12 @@ def _monitor_once(monitor_id: int):
                 return False
             query, platforms = m.query, json_list(m.platforms)
             max_posts, max_comments, sort = m.max_posts, m.max_comments, (m.sort or "latest")
+            excludes = json_list(m.excludes)
             m.last_status = "running"
             # Make this run non-overlapping even if scheduler wakes again.
             m.next_run_at = (datetime.now(timezone.utc) + timedelta(minutes=m.interval_minutes)).isoformat()
         try:
-            _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort)
+            _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, excludes)
         except Exception as exc:
             # Never leave a task stuck in "running" (which blocks "立即检查").
             with Session.begin() as session:
@@ -1178,7 +1572,7 @@ def _monitor_once(monitor_id: int):
             BROWSER_EXEC_LOCK.release()
 
 
-def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort):
+def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, excludes=()):
     reports = {p: {"status": "queued", "fetched": 0, "inserted": 0, "error": ""} for p in platforms}
     fatal = ""
 
@@ -1188,7 +1582,7 @@ def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort):
         r["message"] = message[:260]
         if batch:
             try:
-                matched, inserted = save_items(batch, manual_query=query)
+                matched, inserted = save_items(batch, manual_query=query, excludes=excludes)
                 r["fetched"] += len(batch)
                 r["inserted"] += inserted
             except Exception as exc:
@@ -1309,6 +1703,7 @@ def add_monitor(inp: MonitorIn, request: Request):
             raise HTTPException(400, "最多创建15个监控任务，避免频繁请求平台")
         m = Monitor(query=query, platforms=json.dumps(selected), interval_minutes=inp.interval_minutes,
                     max_posts=inp.max_posts, max_comments=inp.max_comments, sort=inp.sort, active=True,
+                    excludes=json.dumps(clean_words(inp.excludes), ensure_ascii=False),
                     created_at=NOW(), next_run_at=NOW(), last_status="pending")
         s.add(m)
         s.flush()
@@ -1322,9 +1717,30 @@ def patch_monitor(monitor_id: int, inp: MonitorPatch, request: Request):
     with Session.begin() as s:
         m = s.get(Monitor, monitor_id)
         if not m: raise HTTPException(404, "监控任务不存在")
-        m.active = inp.active
-        m.next_run_at = NOW() if inp.active else ""
-        m.last_status = "pending" if inp.active else "paused"
+        if inp.platforms is not None:
+            selected = list(dict.fromkeys(inp.platforms))
+            catalog = {r["id"]: r for r in monitor_source_catalog()}
+            if any(p not in catalog for p in selected):
+                raise HTTPException(422, "包含无效的监控来源")
+            missing = [catalog[p]["name"] for p in selected if not catalog[p]["configured"]]
+            if missing:
+                raise HTTPException(422, "以下平台尚未配置授权接口或密钥：" + "、".join(missing))
+            m.platforms = json.dumps(selected)
+        if inp.query is not None:
+            if not inp.query.strip():
+                raise HTTPException(422, "关键词不能为空")
+            m.query = inp.query.strip()
+        for field in ("interval_minutes", "max_posts", "max_comments", "sort"):
+            if getattr(inp, field) is not None:
+                setattr(m, field, getattr(inp, field))
+        if inp.excludes is not None:
+            m.excludes = json.dumps(clean_words(inp.excludes), ensure_ascii=False)
+        if inp.active is not None:
+            m.active = inp.active
+            m.next_run_at = NOW() if inp.active else ""
+            m.last_status = "pending" if inp.active else "paused"
+        elif inp.interval_minutes is not None and m.active and m.last_status != "running":
+            m.next_run_at = (datetime.now(timezone.utc) + timedelta(minutes=m.interval_minutes)).isoformat()
         out = monitor_dict(m)
     return out
 
@@ -1403,15 +1819,7 @@ def search_online(inp: OnlineSearchIn):
     selected = list(dict.fromkeys(inp.sources))
     if any(source not in PUBLIC_SEARCH_SOURCES for source in selected):
         raise HTTPException(422, "在线搜索只允许选择已实现的公开数据源")
-    providers = {
-        "googlenews": fetch_google_news,
-        "bingnews": fetch_bing_news,
-        "github": fetch_github,
-        "hackernews": fetch_hackernews,
-        "reddit": fetch_reddit_json,
-        "bluesky": fetch_bluesky,
-        "youtube": fetch_youtube,
-    }
+    providers = SEARCH_PROVIDERS
     reports, ids = [], []
     with ThreadPoolExecutor(max_workers=min(5, len(selected))) as executor:
         futures = {source: executor.submit(providers[source], query) for source in selected}
@@ -1464,12 +1872,17 @@ def stats():
 
 
 @app.get("/api/export.csv")
-def export_csv():
-    cols = ("source", "title", "text", "url", "post_url", "comment_url", "author", "author_url", "published_at",
-            "like", "collect", "comment", "share", "view", "matched_terms", "intent", "score", "status",
-            "sentiment", "topics", "hashtags", "notes")
+def export_csv(q: str = "", source: str = "", status: str = "", intent: str = "", author: str = "",
+               sentiment: str = "", platform: str = "", kind: str = "", lead_type: str = "",
+               days: int = Query(0, ge=0, le=3650), follow_up: str = "", tag: str = "",
+               sort: Literal["score", "newest", "published", "follow_up"] = "score"):
+    """Exports exactly what the lead list shows with the same filters (no filters = everything)."""
+    cols = ("id", "source", "title", "text", "url", "post_url", "comment_url", "author", "author_url", "published_at",
+            "like", "collect", "comment", "share", "view", "matched_terms", "intent", "score", "lead_type", "reasons",
+            "status", "follow_up_at", "contacted_at", "tags", "created_at", "sentiment", "topics", "hashtags", "notes")
+    stmt = item_query(q, source, status, intent, author, sentiment, platform, kind, lead_type, days, follow_up, tag, sort)
     with Session() as s:
-        rows = s.scalars(select(Item).order_by(Item.score.desc(), Item.id.desc())).all()
+        rows = s.scalars(stmt).all()
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(cols)
@@ -1589,7 +2002,9 @@ def test_alert():
     if urlparse(url).scheme != "https":
         return {"sent": False, "reason": "Webhook 仅支持 HTTPS"}
     try:
-        r = requests.post(url, json={"text": "Lead Radar webhook test", "event": "test"}, timeout=10)
-        return {"sent": r.ok, "status_code": r.status_code}
+        r = requests.post(url, json=alert_payload(url, [{"source": "测试", "title": "这是一条测试通知", "text": "",
+                                                         "author": "Lead Radar", "url": "https://example.com/",
+                                                         "score": 100, "reasons": ["测试"]}]), timeout=10)
+        return {"sent": r.ok, "status_code": r.status_code, "response": r.text[:200]}
     except requests.RequestException as exc:
         return {"sent": False, "reason": str(exc)[:200]}

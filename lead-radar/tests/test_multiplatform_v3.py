@@ -25,7 +25,7 @@ def test_browser_extended_allowlist_and_links():
 
 def test_bluesky_real_post_parser(monkeypatch):
     def fake_get(url, **kw):
-        assert 'public.api.bsky.app' in url and kw['params']['q'] == 'GPT'
+        assert 'api.bsky.app/xrpc/app.bsky.feed.searchPosts' in url and kw['params']['q'] == 'GPT'
         class R:
             def json(self):
                 return {'posts':[{'uri':'at://did:plc:abc/app.bsky.feed.post/xyz123',
