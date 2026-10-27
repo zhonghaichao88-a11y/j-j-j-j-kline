@@ -6,6 +6,7 @@
 <style>
 :root{--bg:#f3f5f8;--card:#fff;--ink:#17202f;--muted:#667085;--faint:#98a2b3;--line:#e4e7ec;--soft:#f6f8fb;--primary:#2458e6;--primary-ink:#fff;--primary-soft:#eaf0ff;--red:#c4302b;--red-soft:#fdecec;--green:#127a4b;--green-soft:#e6f5ee;--amber:#9a5b00;--amber-soft:#fff4e0;--radius:12px}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 a{color:var(--primary)}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -112,13 +113,47 @@ details.tool>.tool-body{padding:0 20px 18px}
 .scroll{max-height:320px;overflow:auto}
 .toast{position:fixed;right:16px;bottom:16px;background:#121a2b;color:#fff;border-radius:10px;padding:12px 16px;max-width:min(440px,92vw);box-shadow:0 8px 30px #0003;display:none;z-index:20}
 .toast.bad{background:#8f201c}
+/* 4.0 overview */
+.ov{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.ovc{background:var(--soft);border-radius:10px;padding:12px 14px;cursor:pointer;border:1px solid transparent;text-align:left;font:inherit;color:inherit}
+.ovc:hover{border-color:var(--primary)}
+.ovc .n{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.2}
+.ovc .l{font-size:12px;color:var(--muted)}
+.ovc.alert .n{color:var(--red)}
+.bars{display:flex;gap:3px;align-items:flex-end;height:70px;margin-top:14px}
+.bar{flex:1;background:var(--primary-soft);border-radius:3px 3px 0 0;position:relative;min-height:2px}
+.bar i{position:absolute;left:0;right:0;bottom:0;background:var(--primary);border-radius:3px 3px 0 0}
+.bar-labels{display:flex;gap:3px;font-size:10px;color:var(--faint)}.bar-labels span{flex:1;text-align:center;overflow:hidden}
+.funnel{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;font-size:12px}
+/* 4.0 leads */
+.filters2{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.reasons{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}
+.reason{font-size:11px;border-radius:5px;padding:0 6px;background:var(--green-soft);color:var(--green)}
+.reason.neg{background:var(--red-soft);color:var(--red)}
+.ltype{border-radius:6px;padding:0 7px;font-weight:700}
+.ltype.buyer{background:var(--green-soft);color:var(--green)}.ltype.seller{background:#f2f4f7;color:#667085;text-decoration:line-through}.ltype.question{background:var(--primary-soft);color:var(--primary)}
+.lead.seller{opacity:.62}
+.lead-sel{width:16px;height:16px;margin:0;cursor:pointer}
+.fu{font-size:12px;border-radius:6px;padding:1px 8px;background:var(--amber-soft);color:var(--amber)}
+.fu.due{background:var(--red-soft);color:var(--red);font-weight:700}
+.utag{font-size:11px;border-radius:999px;padding:0 8px;background:#eef1f6;color:#475467}
+.bulkbar{position:sticky;top:50px;z-index:4;background:#121a2b;color:#fff;border-radius:10px;padding:8px 12px;margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.bulkbar select,.bulkbar input{width:auto;padding:4px 8px;font-size:12px;border-radius:7px;color:var(--ink)}
+.bulkbar .btn{padding:4px 10px;font-size:12px}
+.menu{position:absolute;z-index:8;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 30px #0002;padding:6px;min-width:240px;max-width:360px}
+.menu button{display:block;width:100%;text-align:left;border:0;background:none;padding:8px 10px;border-radius:7px;cursor:pointer}
+.menu button:hover{background:var(--soft)}
+.menu small{display:block;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.edit-mon{margin-top:10px;padding:12px;background:var(--soft);border-radius:8px}
+.tpl{border-top:1px solid var(--line);padding:10px 0}.tpl:first-child{border-top:0}
+@media(max-width:860px){.ov{grid-template-columns:1fr 1fr}.filters2{grid-template-columns:1fr 1fr}}
 @media(max-width:860px){.opts{grid-template-columns:1fr 1fr}.filters{grid-template-columns:1fr 1fr}.filters input:first-child{grid-column:1/-1}.person{grid-template-columns:1fr}.prow{grid-template-columns:1fr}.pills{margin-left:0}}
 @media(max-width:520px){main{padding:12px}.card{padding:16px}.step{gap:10px}.step-no{width:26px;height:26px}.btn.big{width:100%}}
 </style>
 </head>
 <body>
 <header class="top"><div class="top-inner">
- <div class="brand">LEAD RADAR<small>3.3 · 关键词作品 / 评论 / 用户 监控</small></div>
+ <div class="brand">LEAD RADAR<small>4.0 · 全网关键词获客 · 买家识别 · 跟进管理</small></div>
  <div class="pills" id="metrics"></div>
 </div></header>
 <nav class="tabs"><div class="tabs-inner" role="tablist">
@@ -131,6 +166,13 @@ details.tool>.tool-body{padding:0 20px 18px}
 <main>
 <!-- ================================================================ HOME -->
 <section class="view active" id="view-home">
+
+ <div class="card" id="overviewCard">
+  <div class="row" style="margin-bottom:10px"><h2 style="margin:0">概览</h2><span class="spacer"></span><span class="small muted" id="ovInfo"></span></div>
+  <div class="ov" id="overview"></div>
+  <div class="bars" id="ovBars" aria-label="最近 14 天每天新增线索"></div><div class="bar-labels" id="ovBarLabels"></div>
+  <div class="funnel" id="ovFunnel"></div>
+ </div>
 
  <div class="card" id="loginCard">
   <div class="step"><div class="step-no">1</div><div class="step-body">
@@ -158,6 +200,7 @@ details.tool>.tool-body{padding:0 20px 18px}
      <div><label for="optSort">搜索排序</label><select id="optSort"><option value="latest">最新发布优先</option><option value="relevance">综合排序</option></select></div>
      <div><label for="optPosts">每个平台读几条作品</label><input id="optPosts" type="number" min="1" max="20" value="10"></div>
      <div><label for="optComments">每条作品读几条评论</label><input id="optComments" type="number" min="0" max="30" value="20"></div>
+     <div style="grid-column:1/-1"><label for="optExcludes">排除词（可选，逗号隔开：包含这些词的内容不保存，例如 招聘,兼职,课程）</label><input id="optExcludes" placeholder="招聘, 兼职"></div>
      <div><label for="optInterval">持续监控间隔</label><select id="optInterval"><option value="5">每 5 分钟</option><option value="10">每 10 分钟</option><option value="15" selected>每 15 分钟（推荐）</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option><option value="180">每 3 小时</option></select></div>
     </div>
    </details>
@@ -187,16 +230,28 @@ details.tool>.tool-body{padding:0 20px 18px}
 <!-- ================================================================ LEADS -->
 <section class="view" id="view-leads">
  <div class="card">
-  <div class="row" style="margin-bottom:12px"><h2 style="margin:0">线索</h2><span class="muted small" id="listInfo"></span><span class="spacer"></span><a class="btn sm" href="/api/export.csv">⬇ 导出 CSV</a><button class="btn sm" id="reload" type="button">刷新</button></div>
+  <div class="row" style="margin-bottom:12px"><h2 style="margin:0">线索</h2><span class="muted small" id="listInfo"></span><span class="spacer"></span><a class="btn sm" id="exportCsv" href="/api/export.csv" title="按当前筛选条件导出">⬇ 导出 CSV</a><button class="btn sm" id="reload" type="button">刷新</button></div>
   <div class="filters">
    <input id="search" placeholder="搜索已保存的内容 / 作者">
    <select id="platformFilter"><option value="">全部平台</option></select>
    <select id="kindFilter"><option value="">作品和评论</option><option value="comment">只看评论</option><option value="work">只看作品</option></select>
    <select id="intentFilter"><option value="">全部意向</option><option value="high">高意向</option><option value="medium">中意向</option><option value="low">低意向</option></select>
-   <select id="statusFilter"><option value="">全部状态</option><option value="new">待处理</option><option value="saved">已收藏</option><option value="contacted">已联系</option><option value="replied">已回复</option><option value="won">已成交</option><option value="ignored">忽略</option></select>
+   <select id="statusFilter"><option value="">全部状态</option><option value="open">未完成（待处理~已回复）</option><option value="new">待处理</option><option value="saved">已收藏</option><option value="contacted">已联系</option><option value="replied">已回复</option><option value="won">已成交</option><option value="ignored">忽略</option></select>
    <button class="btn" id="clearFilters" type="button">清除</button>
   </div>
-  <input id="authorFilter" type="hidden">
+  <div class="filters2">
+   <select id="typeFilter" aria-label="线索类型"><option value="not_seller">排除商家广告</option><option value="">全部类型</option><option value="buyer">只看买家需求</option><option value="question">只看提问/咨询</option><option value="seller">只看商家广告</option></select>
+   <select id="daysFilter" aria-label="入库时间"><option value="0">全部时间</option><option value="1">最近 24 小时</option><option value="3">最近 3 天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select>
+   <select id="followFilter" aria-label="跟进提醒"><option value="">全部提醒</option><option value="due">⏰ 跟进到期</option><option value="scheduled">已设跟进提醒</option></select>
+   <select id="sortFilter" aria-label="排序"><option value="score">高意向优先</option><option value="newest">最新入库</option><option value="published">最新发布</option><option value="follow_up">按跟进时间</option></select>
+  </div>
+  <input id="authorFilter" type="hidden"><input id="tagFilter" type="hidden">
+  <div class="bulkbar" id="bulkBar" hidden><b id="bulkCount">0</b> 条已选
+   <select id="bulkStatus"><option value="">改状态…</option></select>
+   <select id="bulkFollow"><option value="">设跟进提醒…</option><option value="1">明天</option><option value="3">3 天后</option><option value="7">1 周后</option><option value="clear">清除提醒</option></select>
+   <input id="bulkTag" placeholder="加标签" maxlength="30" style="width:90px"><button class="btn sm" id="bulkTagBtn" type="button">加</button>
+   <span class="spacer"></span><button class="btn sm" id="bulkAll" type="button">全选本页</button><button class="btn sm danger" id="bulkDelete" type="button">删除</button><button class="btn sm" id="bulkNone" type="button">取消</button>
+  </div>
   <div class="hint small" id="authorFilterInfo" hidden></div>
   <p class="small faint" id="commentNavigationTip" style="margin:4px 0 8px">评论跳转说明：「打开评论直达链接」会直接跳到那条评论（B站、Reddit、YouTube 等支持）；其他平台点「尝试高亮评论」，程序会在你电脑的浏览器里打开作品、滚动查找并高亮这条评论，不保证找到（评论被折叠、删除或需要登录时可能失败），找不到时可「复制评论文字」手动查找。</p>
   <div id="items"><div class="empty">正在加载…</div></div>
@@ -219,8 +274,60 @@ details.tool>.tool-body{padding:0 20px 18px}
  <details class="tool" open><summary>📖 使用说明</summary><div class="tool-body small">
   <p><b>基本流程：</b>①「搜索与监控」里先点「打开浏览器去登录」登录一次 → ② 输入关键词、勾选平台 →「立即搜索一次」或「开启持续监控」→ ③ 到「线索」查看、跟进。</p>
   <p><b>搜不到东西？</b>看「搜索进度」或监控任务下的红字原因。常见原因：没登录或登录过期（重新点「打开浏览器去登录」）、出现验证码（在弹出的浏览器里手动完成）、关键词太偏。</p>
+  <p><b>线索怎么看：</b>绿色标签「买家需求」是有人在求推荐、问价格、找供应商，优先跟进；灰色划线「商家广告」是同行在打广告，默认不显示（筛选里可以查看）；每条下面的小标签是打分依据。首页「概览」的数字可以直接点。</p>
+  <p><b>怎么跟进：</b>「💬 话术」复制回复模板 → 去平台里发送 → 状态改「已联系」→ 设「⏰ 提醒」，到期会在首页「跟进到期」里提醒你。同行账号点「🚫 屏蔽」。</p>
   <p><b>能拿到什么：</b>公开作品、作品的点赞/收藏/评论/分享数、可见评论、作者和评论者的昵称与主页。<b>拿不到：</b>别人的搜索记录、点赞/收藏用户名单、私信、手机号。</p>
   <p><b>注意：</b>监控间隔太短可能触发平台风控，建议 15 分钟以上；程序和电脑要一直开着。</p>
+ </div></details>
+
+ <details class="tool" id="rulesTool"><summary>🎯 意向规则与过滤</summary><div class="tool-body">
+  <p class="small muted">程序按规则给每条内容打分：「求推荐 / 多少钱 / 哪家好 / 有人能做吗」等是<b>买家</b>；「欢迎咨询 / 加微信 / 承接 / 招代理」等是<b>商家广告</b>，会被降分。下面可以加上你们行业自己的词，保存后已有线索会重新打分。每行一个或用逗号隔开。</p>
+  <div class="opts" style="grid-template-columns:1fr 1fr">
+   <div><label for="setBuyer">额外的买家意向词（命中 = 高意向）</label><textarea id="setBuyer" placeholder="例如：想做私域&#10;找代运营&#10;求个靠谱的"></textarea></div>
+   <div><label for="setSeller">额外的广告/同行词（命中 = 判为商家，降分）</label><textarea id="setSeller" placeholder="例如：全网最低价&#10;接单中"></textarea></div>
+   <div><label for="setExclude">全局排除词（命中的内容直接不保存）</label><textarea id="setExclude" placeholder="例如：招聘&#10;兼职&#10;课程"></textarea></div>
+   <div><label for="setBlocked">屏蔽的用户（昵称或主页链接，同行/广告号）</label><textarea id="setBlocked" placeholder="线索卡片上点「🚫 屏蔽」会自动加到这里"></textarea></div>
+  </div>
+  <div class="row" style="margin-top:10px"><label class="chip"><input type="checkbox" id="setHideSellers"><span>新内容判为商家广告时直接不保存</span></label>
+   <label class="small muted" for="setNotify">通知阈值：意向分 ≥</label><input id="setNotify" type="number" min="0" max="100" value="80" style="width:80px">
+   <span class="spacer"></span><button class="btn primary" id="saveSettings" type="button">保存规则</button></div>
+  <p class="small muted" id="settingsResult"></p>
+ </div></details>
+
+ <details class="tool" id="tplTool"><summary>💬 话术库（回复模板）</summary><div class="tool-body">
+  <p class="small muted">线索卡片上点「💬 话术」选一条，会自动替换变量并复制，粘贴到平台里回复即可。变量：<code>{author}</code> 对方昵称、<code>{keyword}</code> 命中关键词、<code>{title}</code> 作品标题、<code>{platform}</code> 平台名。<b>请人工发送</b>，程序不会自动评论或私信（平台会封号）。</p>
+  <div id="templates"></div>
+  <form id="tplForm" class="opts" style="grid-template-columns:1fr 3fr auto;align-items:end">
+   <div><label for="tplName">名称</label><input id="tplName" maxlength="100" required></div>
+   <div><label for="tplText">内容</label><input id="tplText" maxlength="4000" required placeholder="你好 {author}，看到你在问「{keyword}」…"></div>
+   <button class="btn primary" type="submit">添加</button>
+  </form>
+ </div></details>
+
+ <details class="tool"><summary>🔔 新线索通知（企业微信 / 钉钉 / 飞书）</summary><div class="tool-body small">
+  <p>发现高意向线索时，自动推送到你的群机器人。在程序文件夹的 <code>.env</code> 里填写 <code>ALERT_WEBHOOK_URL=</code>，重启程序：</p>
+  <ul><li><b>企业微信</b>：群 → 添加群机器人 → 复制 Webhook 地址（https://qyapi.weixin.qq.com/…）</li>
+   <li><b>钉钉</b>：群设置 → 机器人 → 自定义 → 安全设置选「自定义关键词」，填 <code>Lead Radar</code></li>
+   <li><b>飞书</b>：群设置 → 群机器人 → 自定义机器人</li>
+   <li><b>微信个人</b>：用 Server酱（sctapi.ftqq.com）的发送地址</li>
+   <li>也支持 Slack、Discord 和任意接收 JSON 的地址</li></ul>
+  <button class="btn" id="testAlert" type="button">发一条测试通知</button> <span class="muted" id="alertResult"></span>
+ </div></details>
+
+ <details class="tool"><summary>🌐 数据来源说明与密钥配置</summary><div class="tool-body small">
+  <p><b>不用配置就能用：</b>小红书、抖音、微博、知乎、B站、快手、贴吧、TikTok（浏览器采集，需登录）；V2EX、中国政府采购网、Hacker News、GitHub、Bluesky、Stack Overflow、Lemmy、Mastodon（按话题标签）、Google/Bing 新闻。</p>
+  <p><b>填了 .env 更好用：</b></p>
+  <ul>
+   <li><code>REDDIT_CLIENT_ID</code> / <code>REDDIT_CLIENT_SECRET</code>：Reddit 现在基本禁止未登录访问。到 reddit.com/prefs/apps 免费建一个 script 应用即可</li>
+   <li><code>YOUTUBE_API_KEY</code>：YouTube 视频和评论（Google Cloud 免费额度）</li>
+   <li><code>X_BEARER_TOKEN</code>：X(Twitter) 官方 API</li>
+   <li><code>GITHUB_API_TOKEN</code>：GitHub 搜索额度从每分钟 10 次提高到 30 次</li>
+   <li><code>DISCOURSE_SITES</code>：要监控的 Discourse 论坛域名，逗号隔开</li>
+   <li><code>MASTODON_ACCESS_TOKEN</code>：Mastodon 全文搜索（不填只能按 #话题）</li>
+   <li><code>STACKEXCHANGE_SITES</code> / <code>STACKEXCHANGE_KEY</code>：选择 Stack Exchange 站点、提高额度</li>
+   <li><code>INSTAGRAM_API_URL</code> 等：你自己有授权的数据服务商接口</li>
+  </ul>
+  <p class="muted"><b>政府采购公告</b>是 B2B 最直接的买家信号（采购人就是要买东西的单位），但该网站限制访问频率，建议监控间隔 3 小时以上。</p>
  </div></details>
 
  <details class="tool"><summary>✍️ 手动保存一条链接</summary><div class="tool-body">
@@ -296,23 +403,50 @@ function showTab(name){
  store.set('tab', name);
  if(name === 'leads') refreshItems().catch(e => toast(e.message, true));
  if(name === 'people') refreshAuthors().catch(e => toast(e.message, true));
- if(name === 'tools') Promise.all([refreshKeywords(), refreshLogs(), refreshTrends()]).catch(e => toast(e.message, true));
+ if(name === 'tools') Promise.all([refreshKeywords(), refreshLogs(), refreshTrends(), refreshSettings(), refreshTemplates()]).catch(e => toast(e.message, true));
+ if(name === 'home') refreshStats().catch(() => {});
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
 document.addEventListener('click', e => {const g = e.target.closest('[data-goto]'); if(g) showTab(g.dataset.goto)});
 
 /* ---------------------------------------------------------------- header stats */
 async function refreshStats(){
- const x = await api('/api/stats');
- $('metrics').innerHTML = [['线索', x.total], ['高意向', x.high], ['待处理', x.new]].map(([l, n]) => `<span class="pill">${l}<b>${n || 0}</b></span>`).join('');
+ const [x, o] = await Promise.all([api('/api/stats'), api('/api/overview?days=14')]);
+ $('metrics').innerHTML = [['线索', x.total], ['高意向', x.high], ['待处理', x.new], ['⏰ 跟进到期', o.follow_up_due]].map(([l, n]) => `<span class="pill">${l}<b>${n || 0}</b></span>`).join('');
  $('badgeNew').hidden = !x.new; $('badgeNew').textContent = x.new > 999 ? '999+' : x.new;
+ renderOverview(o);
+}
+function renderOverview(o){
+ const cards = [
+  ['24 小时新增', o.today_new, {daysFilter:'1', sortFilter:'newest'}],
+  ['24 小时高意向', o.today_high, {daysFilter:'1', intentFilter:'high'}],
+  ['高意向未跟进', o.high_open, {intentFilter:'high', statusFilter:'new', typeFilter:'not_seller'}],
+  ['⏰ 跟进到期', o.follow_up_due, {followFilter:'due', sortFilter:'follow_up', typeFilter:''}, o.follow_up_due > 0],
+ ];
+ $('overview').innerHTML = cards.map(([l, n, f, alert], i) => `<button type="button" class="ovc ${alert ? 'alert' : ''}" data-ov="${i}"><div class="n">${n || 0}</div><div class="l">${l} →</div></button>`).join('');
+ $('overview').onclick = e => {const b = e.target.closest('[data-ov]'); if(b) openLeads(cards[b.dataset.ov][2])};
+ const max = Math.max(1, ...o.daily.map(d => d.count));
+ $('ovBars').innerHTML = o.daily.map(d => `<div class="bar" style="height:${Math.max(3, d.count / max * 100)}%" title="${esc(d.day)}：新增 ${d.count}，高意向 ${d.high}"><i style="height:${d.count ? d.high / d.count * 100 : 0}%"></i></div>`).join('');
+ $('ovBarLabels').innerHTML = o.daily.map((d, i) => `<span>${i % 2 ? '' : esc(d.day)}</span>`).join('');
+ const F = o.funnel || {};
+ $('ovFunnel').innerHTML = `<span class="muted">跟进漏斗：</span>` + Object.entries(STATUSES).map(([k, n]) => `<span class="tag">${n} ${F[k] || 0}</span>`).join('') +
+  `<span class="faint">　·　深色 = 高意向　·　${o.monitors_active} 个监控运行中${o.platforms.length ? '　·　来源：' + o.platforms.slice(0, 5).map(p => esc(p.platform) + ' ' + p.count).join('、') : ''}</span>`;
+ $('ovInfo').textContent = o.total ? `共 ${o.total} 条真实线索，其中商家广告 ${o.sellers} 条已自动降分` : '还没有线索：在下面输入关键词搜一次';
+}
+const FILTER_IDS = ['search','platformFilter','kindFilter','intentFilter','statusFilter','typeFilter','daysFilter','followFilter','sortFilter','authorFilter','tagFilter'];
+const FILTER_DEFAULTS = {typeFilter:'not_seller', daysFilter:'0', sortFilter:'score'};
+function openLeads(filters){
+ for(const id of FILTER_IDS) $(id).value = FILTER_DEFAULTS[id] ?? '';
+ for(const [k, v] of Object.entries(filters || {})) $(k).value = v;
+ showTab('leads');
 }
 
 /* ---------------------------------------------------------------- platforms */
 function chip(name, value, label, checked, disabled, title=''){
  return `<label class="chip" title="${esc(title)}"><input type="checkbox" name="${name}" value="${esc(value)}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span>${esc(label)}</span></label>`;
 }
-const SHORT = {bilibili:'B站', googlenews:'Google 新闻', bingnews:'Bing 新闻', reddit:'Reddit', github:'GitHub', hackernews:'Hacker News', bluesky:'Bluesky', youtube:'YouTube', x:'X (Twitter)'};
+const SHORT = {bilibili:'B站', googlenews:'Google 新闻', bingnews:'Bing 新闻', reddit:'Reddit', github:'GitHub', hackernews:'Hacker News', bluesky:'Bluesky', youtube:'YouTube', x:'X (Twitter)',
+ v2ex:'V2EX', ccgp:'政府采购公告', stackexchange:'Stack Overflow', lemmy:'Lemmy', mastodon:'Mastodon', discourse:'Discourse 论坛'};
 const shortName = r => SHORT[r.id] || r.name.replace(/ 授权 JSON 接口$/, '（授权接口）').replace(/ 官方 API$/, '').replace(/（非客户名单）/, '');
 function renderPlatforms(){
  const saved = store.get('platforms', ['xhs', 'douyin', 'bilibili']);
@@ -385,7 +519,7 @@ function formValues(){
  if(!query){$('keyword').focus(); throw new Error('请先输入关键词')}
  if(!platforms.length) throw new Error('请至少勾选一个平台');
  const num = (id, lo, hi, d) => Math.min(hi, Math.max(lo, Number($(id).value) || d));
- return {query, platforms, sort: $('optSort').value, max_posts: num('optPosts', 1, 20, 10), max_comments: num('optComments', 0, 30, 20)};
+ return {query, platforms, sort: $('optSort').value, max_posts: num('optPosts', 1, 20, 10), max_comments: num('optComments', 0, 30, 20), excludes: terms($('optExcludes').value)};
 }
 const STATE_LABEL = {queued:['等待中',''], searching:['正在打开','run'], waiting_login:['等你登录/验证','warnt'], reading:['读取中','run'], done:['完成','ok'], empty:['没有结果','warnt'], error:['失败','err']};
 let jobTimer;
@@ -400,6 +534,7 @@ async function watchJob(id){
    return `<div class="prow"><b>${esc(r.name || nameOf(p))}</b><div>${esc(r.message || '')}${r.error && r.status !== 'waiting_login' ? `<div class="bad small">${esc(r.error)}</div>` : ''}</div><div class="row"><span class="tag ${cls}">${label}</span><span class="small muted">读取 ${r.fetched} · 新增 <b class="${r.inserted ? 'good' : ''}">${r.inserted}</b></span></div></div>`}).join('');
   $('jobEvent').innerHTML = x.error ? `<span class="bad">${esc(x.error)}</span>` : esc(x.events?.[x.events.length - 1] || '');
   if(done){const n = Object.values(x.platforms).reduce((a, r) => a + r.inserted, 0); toast(`搜索完成，新增 ${n} 条线索`); refreshStats(); refreshAuthorsQuiet(); return}
+  if(x.platforms && Object.values(x.platforms).some(r => r.inserted)) refreshStats().catch(() => {});
   jobTimer = setTimeout(tick, 2000);
  };
  await tick();
@@ -420,15 +555,32 @@ $('monitorForm').addEventListener('submit', e => {e.preventDefault(); guard($('m
 
 /* ---------------------------------------------------------------- step 3: monitors */
 const MON_LABEL = {ok:['正常','ok'], partial:['部分失败','warnt'], error:['失败','err'], running:['正在检查','run'], pending:['排队中','run'], paused:['已暂停','']};
-const prevRuns = new Map(); let monStarted = false;
+const prevRuns = new Map(); let monStarted = false, editingMonitor = null, monitorsCache = [];
+function monitorEditor(m){
+ const usable = catalog.filter(r => r.configured);
+ return `<form class="edit-mon" data-mon-form="${m.id}">
+  <div class="opts" style="grid-template-columns:2fr 1fr 1fr 1fr">
+   <div><label>关键词</label><input name="query" maxlength="100" value="${esc(m.query)}" required></div>
+   <div><label>间隔（分钟）</label><input name="interval_minutes" type="number" min="5" max="1440" value="${m.interval_minutes}"></div>
+   <div><label>每平台作品数</label><input name="max_posts" type="number" min="1" max="20" value="${m.max_posts}"></div>
+   <div><label>每作品评论数</label><input name="max_comments" type="number" min="0" max="30" value="${m.max_comments}"></div>
+   <div style="grid-column:1/-1"><label>排除词（逗号隔开）</label><input name="excludes" value="${esc((m.excludes || []).join(', '))}"></div>
+  </div>
+  <div class="group-title">平台</div><div class="chips">${usable.map(r => chip('mp' + m.id, r.id, shortName(r), m.platforms.includes(r.id), false, r.note)).join('')}</div>
+  <div class="row" style="margin-top:10px"><select name="sort" style="width:auto"><option value="latest" ${m.sort !== 'relevance' ? 'selected' : ''}>最新发布优先</option><option value="relevance" ${m.sort === 'relevance' ? 'selected' : ''}>综合排序</option></select>
+   <span class="spacer"></span><button class="btn sm" type="button" data-mon-cancel>取消</button><button class="btn sm primary" type="submit">保存修改</button></div>
+ </form>`;
+}
 async function monitorRefresh(){
- const list = await api('/api/monitors');
+ const list = await api('/api/monitors'); monitorsCache = list;
  $('monitorStatus').textContent = list.length ? `${list.filter(m => m.active).length} 个运行中 · 每 20 秒自动刷新` : '';
  $('monitorList').innerHTML = list.length ? list.map(m => {const [label, cls] = MON_LABEL[m.active ? m.last_status : 'paused'] || [m.last_status, ''];
   return `<div class="mon"><div class="mon-head"><b>${esc(m.query)}</b><span class="tag ${cls}">${label}</span><span class="small muted">${m.platforms.map(nameOf).map(esc).join('、')} · 每 ${m.interval_minutes} 分钟 · ${m.sort === 'relevance' ? '综合排序' : '最新优先'}</span></div>
    <div class="small muted" style="margin-top:4px">上次检查 ${m.last_run_at ? esc(when(m.last_run_at)) : '还没有'} · 下次 ${m.active ? (m.last_status === 'running' ? '正在检查' : esc(until(m.next_run_at))) : '已暂停'} · 上次新增 <b class="${m.last_new ? 'good' : ''}">${m.last_new}</b> 条 · 共检查 ${m.run_count} 次</div>
    ${m.last_error ? `<details class="small bad" style="margin-top:4px"><summary>有 ${m.last_error.split('；').length} 个来源没成功，点开看原因</summary>${m.last_error.split('；').map(x => `<div>· ${esc(x)}</div>`).join('')}</details>` : ''}
-   <div class="row" style="margin-top:8px"><button class="btn sm" data-mon-run="${m.id}" ${m.active ? '' : 'disabled'}>立即检查</button><button class="btn sm" data-mon-toggle="${m.id}" data-enable="${m.active ? '0' : '1'}">${m.active ? '暂停' : '继续'}</button><button class="btn sm" data-goto="leads">看结果</button><span class="spacer"></span><button class="btn sm danger" data-mon-del="${m.id}">删除</button></div></div>`}).join('')
+   <div class="row" style="margin-top:8px"><button class="btn sm" data-mon-run="${m.id}" ${m.active ? '' : 'disabled'}>立即检查</button><button class="btn sm" data-mon-toggle="${m.id}" data-enable="${m.active ? '0' : '1'}">${m.active ? '暂停' : '继续'}</button><button class="btn sm" data-mon-edit="${m.id}">✏️ 修改</button><button class="btn sm" data-mon-leads="${esc(m.query)}">看结果</button><span class="spacer"></span><button class="btn sm danger" data-mon-del="${m.id}">删除</button></div>
+   ${m.excludes?.length ? `<div class="small faint" style="margin-top:4px">排除词：${esc(m.excludes.join('、'))}</div>` : ''}
+   ${editingMonitor === m.id ? monitorEditor(m) : ''}</div>`}).join('')
   : '<div class="empty">还没有监控任务。在上面输入关键词，点「开启持续监控」。</div>';
  let changed = false;
  for(const m of list){
@@ -445,7 +597,21 @@ async function monitorRefresh(){
  const runs = await api('/api/monitor-runs?limit=10');
  $('monitorRecent').innerHTML = runs.length ? runs.map(r => `<div class="log">${esc(when(r.finished_at))} · 任务 #${r.monitor_id} · 读取 ${r.fetched} · 新增 ${r.inserted} ${r.status === 'ok' ? '' : '<span class="warn">（' + esc(MON_LABEL[r.status]?.[0] || r.status) + '）</span>'}</div>`).join('') : '暂无';
 }
+$('monitorList').addEventListener('submit', e => {
+ const f = e.target.closest('[data-mon-form]'); if(!f) return; e.preventDefault();
+ guard(f.querySelector('[type=submit]'), async () => {
+  const fd = new FormData(f), id = f.dataset.monForm;
+  const platforms = checked('mp' + id);
+  if(!platforms.length) throw new Error('至少选择一个平台');
+  await post('/api/monitors/' + id, {query: fd.get('query').trim(), interval_minutes: Number(fd.get('interval_minutes')), max_posts: Number(fd.get('max_posts')),
+   max_comments: Number(fd.get('max_comments')), excludes: terms(fd.get('excludes') || ''), sort: fd.get('sort'), platforms}, 'PATCH');
+  editingMonitor = null; toast('监控任务已修改'); await monitorRefresh();
+ })();
+});
 $('monitorList').addEventListener('click', e => {
+ if(e.target.closest('[data-mon-cancel]')){editingMonitor = null; monitorRefresh(); return}
+ const ed = e.target.closest('[data-mon-edit]'); if(ed){editingMonitor = editingMonitor === Number(ed.dataset.monEdit) ? null : Number(ed.dataset.monEdit); monitorRefresh(); return}
+ const lk = e.target.closest('[data-mon-leads]'); if(lk){openLeads({search: lk.dataset.monLeads, sortFilter:'newest'}); return}
  const b = e.target.closest('[data-mon-run],[data-mon-toggle],[data-mon-del]'); if(!b) return;
  guard(b, async () => {
   if(b.dataset.monRun){await post(`/api/monitors/${b.dataset.monRun}/run`); toast('已加入检查队列')}
@@ -454,14 +620,24 @@ $('monitorList').addEventListener('click', e => {
   await monitorRefresh();
  })();
 });
-setInterval(() => monitorRefresh().catch(() => {}), 20000);
+setInterval(() => {if(editingMonitor === null) monitorRefresh().catch(() => {})}, 20000);  // don't wipe an open edit form
 
 /* ---------------------------------------------------------------- leads */
 const METRIC_LABELS = [['view','播放'],['like','点赞'],['collect','收藏'],['coin','投币'],['comment','评论'],['share','分享'],['repost','转发'],['quote','引用']];
-function metricsMarkup(m){const parts = METRIC_LABELS.filter(([k]) => m && m[k] !== undefined && m[k] !== null).map(([k, l]) => `<span>${l} <b>${fmtCount(m[k])}</b></span>`); return parts.length ? `<div class="stats">${parts.join('')}</div>` : ''}
+const VIDEO_PLATFORMS = ['抖音','哔哩哔哩','快手','TikTok','YouTube'];
+function metricsMarkup(m, source){const video = VIDEO_PLATFORMS.includes(platformOf(source));
+ const parts = METRIC_LABELS.filter(([k]) => m && m[k] !== undefined && m[k] !== null).map(([k, l]) => `<span>${k === 'view' && !video ? '浏览' : l} <b>${fmtCount(m[k])}</b></span>`); return parts.length ? `<div class="stats">${parts.join('')}</div>` : ''}
 const BROWSER_COMMENT_SOURCES = ['小红书','抖音','微博','知乎','哔哩哔哩','快手','TikTok','百度贴吧'].map(x => x + '评论');
 const platformOf = s => String(s || '').replace(/(作品|评论|视频)$/, '');
 function authorMarkup(x){const link = safeLink(x.author_url); return link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(x.author || '主页')} ↗</a>` : esc(x.author || '未知')}
+const LTYPES = {buyer:'买家需求', seller:'商家广告', question:'提问咨询'};
+const selected = new Set();
+let templatesCache = null;
+function fuMarkup(x){
+ if(!x.follow_up_at) return '';
+ const due = new Date(x.follow_up_at) <= new Date();
+ return `<span class="fu ${due ? 'due' : ''}">⏰ ${due ? '跟进到期' : '跟进'} ${esc(new Date(x.follow_up_at).toLocaleString('zh-CN', {hour12:false, month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}))}</span>`;
+}
 function itemMarkup(x){
  const isComment = String(x.source || '').endsWith('评论');
  const direct = isComment && x.navigation_kind === 'direct' && safeLink(x.comment_url || x.url);
@@ -471,26 +647,70 @@ function itemMarkup(x){
  const manual = isComment && !direct && !canLocate;
  const news = ['Google News','Bing News'].includes(x.source);
  const title = isComment ? String(x.title || '').replace(/^评论 · /, '') : (x.title || '(无标题)');
- return `<article class="lead">
-  <div class="lead-head"><span class="pf">${esc(platformOf(x.source))}</span><span class="kind ${isComment ? 'comment' : ''}">${isComment ? '评论' : '作品'}</span>${news ? '<span class="intent low">新闻资讯</span>' : `<span class="intent ${esc(x.intent)}">${esc(INTENTS[x.intent] || '未知')} ${Number(x.score) || 0}</span>`}<span class="faint">${x.published_at ? '发布 ' + esc(when(x.published_at)) + ' · ' : ''}入库 ${esc(when(x.created_at))}</span><span class="spacer"></span><span class="faint">#${x.id}</span></div>
+ const reasons = (x.reasons || []).map(r => `<span class="reason ${/^疑似商家|没有需求|新闻/.test(r) ? 'neg' : ''}">${esc(r)}</span>`).join('');
+ return `<article class="lead ${x.lead_type === 'seller' ? 'seller' : ''}">
+  <div class="lead-head"><input type="checkbox" class="lead-sel" data-sel="${x.id}" ${selected.has(x.id) ? 'checked' : ''} aria-label="选择"><span class="pf">${esc(platformOf(x.source))}</span><span class="kind ${isComment ? 'comment' : ''}">${isComment ? '评论' : '作品'}</span>${news ? '<span class="intent low">新闻资讯</span>' : `<span class="intent ${esc(x.intent)}">${esc(INTENTS[x.intent] || '未知')} ${Number(x.score) || 0}</span>`}${LTYPES[x.lead_type] ? `<span class="ltype ${esc(x.lead_type)}">${LTYPES[x.lead_type]}</span>` : ''}${fuMarkup(x)}${(x.tags || []).map(t => `<span class="utag" data-tag="${esc(t)}" style="cursor:pointer">#${esc(t)}</span>`).join('')}<span class="faint">${x.published_at ? '发布 ' + esc(when(x.published_at)) + ' · ' : ''}入库 ${esc(when(x.created_at))}</span><span class="spacer"></span><span class="faint">#${x.id}</span></div>
   <h3>${isComment ? '<span class="faint">评论于：</span>' : ''}${esc(title)}</h3>
   <div class="body clamp" title="点击展开/收起">${esc(x.text || '')}</div>
-  ${metricsMarkup(x.metrics)}
-  <div class="who">${isComment ? '评论者' : '作者'}：${authorMarkup(x)}${(x.matched_terms || []).length ? ' · 关键词：' + esc(x.matched_terms.join('、')) : ''}</div>
+  ${reasons ? `<div class="reasons" title="打分依据">${reasons}</div>` : ''}
+  ${metricsMarkup(x.metrics, x.source)}
+  <div class="who">${isComment ? '评论者' : '作者'}：${authorMarkup(x)}${(x.matched_terms || []).length ? ' · 关键词：' + esc(x.matched_terms.join('、')) : ''}${x.contacted_at ? ' · 首次联系 ' + esc(when(x.contacted_at)) : ''}</div>
   <div class="lead-actions">
    ${link ? `<a class="btn sm primary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${direct ? '打开评论直达链接 ↗' : isComment ? '打开所属作品 ↗' : '打开原文 ↗'}</a>` : '<span class="small muted">无原文链接</span>'}
    ${postLink ? `<a class="btn sm" href="${esc(postLink)}" target="_blank" rel="noopener noreferrer">所属作品 ↗</a>` : ''}
    ${canLocate ? `<button class="btn sm" data-locate-comment="${x.id}" title="在你电脑的浏览器里打开作品并滚动查找、高亮这条评论，不保证找到">🎯 尝试高亮评论</button>` : ''}
    ${manual ? '<span class="small muted">暂不支持评论直达，请在作品页面查找</span>' : ''}
    ${isComment ? `<button class="btn sm" data-copy-comment="${x.id}">复制评论文字</button>` : ''}
+   <button class="btn sm" data-reply="${x.id}" title="选一条话术，自动填入对方昵称并复制">💬 话术</button>
    <span class="spacer"></span>
+   <select data-follow="${x.id}" aria-label="跟进提醒"><option value="">⏰ 提醒…</option><option value="0.125">3 小时后</option><option value="1">明天</option><option value="3">3 天后</option><option value="7">1 周后</option>${x.follow_up_at ? '<option value="clear">清除提醒</option>' : ''}</select>
    <select data-status="${x.id}" aria-label="跟进状态">${Object.entries(STATUSES).map(([v, n]) => `<option value="${v}" ${v === x.status ? 'selected' : ''}>${n}</option>`).join('')}</select>
    <button class="btn sm ghost" data-note="${x.id}">✏️ 备注</button>
+   ${x.author ? `<button class="btn sm ghost" data-block="${x.id}" title="同行/广告号：以后不再收录，已收录的待处理内容标为忽略">🚫 屏蔽</button>` : ''}
   </div>
   ${x.notes ? `<div class="note">${esc(x.notes)}</div>` : ''}
  </article>`;
 }
-function itemParams(){return new URLSearchParams({q: $('search').value, platform: $('platformFilter').value, kind: $('kindFilter').value, intent: $('intentFilter').value, status: $('statusFilter').value, author: $('authorFilter').value, limit: String(PAGE), offset: String(offset)})}
+function followAt(v){if(v === 'clear') return ''; const d = new Date(Date.now() + Number(v) * 86400000); if(Number(v) >= 1) d.setHours(10, 0, 0, 0); return d.toISOString()}
+function updateBulk(){$('bulkBar').hidden = !selected.size; $('bulkCount').textContent = selected.size}
+async function bulk(data, msg){
+ if(!selected.size) return;
+ const r = await post('/api/items/bulk', {ids: [...selected], ...data});
+ toast(`${msg}：${r.updated} 条`); if(data.delete) selected.clear();
+ await refreshItems(); refreshStats();
+}
+$('bulkStatus').innerHTML = '<option value="">改状态…</option>' + Object.entries(STATUSES).map(([v, n]) => `<option value="${v}">${n}</option>`).join('');
+$('bulkStatus').addEventListener('change', e => {const v = e.target.value; e.target.value = ''; if(v) guard(null, () => bulk({status: v}, '已改为「' + STATUSES[v] + '」'))()});
+$('bulkFollow').addEventListener('change', e => {const v = e.target.value; e.target.value = ''; if(v) guard(null, () => bulk({follow_up_at: followAt(v)}, v === 'clear' ? '已清除提醒' : '已设置跟进提醒'))()});
+$('bulkTagBtn').addEventListener('click', guard($('bulkTagBtn'), async () => {const t = $('bulkTag').value.trim(); if(!t) throw new Error('先输入标签'); await bulk({add_tag: t}, '已加标签「' + t + '」'); $('bulkTag').value = ''}));
+$('bulkDelete').addEventListener('click', guard($('bulkDelete'), async () => {if(confirm(`删除选中的 ${selected.size} 条线索？不能恢复。`)) await bulk({delete: true}, '已删除')}));
+$('bulkAll').addEventListener('click', () => {document.querySelectorAll('[data-sel]').forEach(c => {c.checked = true; selected.add(Number(c.dataset.sel))}); updateBulk()});
+$('bulkNone').addEventListener('click', () => {selected.clear(); document.querySelectorAll('[data-sel]').forEach(c => c.checked = false); updateBulk()});
+function fillTemplate(text, x){
+ const vars = {author: x.author || '朋友', keyword: (x.matched_terms || [])[0] || '', title: String(x.title || '').replace(/^评论 · /, '').slice(0, 40), platform: platformOf(x.source)};
+ return text.replace(/\{(author|keyword|title|platform)\}/g, (_, k) => vars[k]);
+}
+async function replyMenu(btn, id){
+ document.querySelectorAll('.menu').forEach(m => m.remove());
+ const [x, tpls] = await Promise.all([api('/api/items/' + id), templatesCache ? Promise.resolve(templatesCache) : api('/api/templates')]);
+ templatesCache = tpls;
+ const menu = document.createElement('div'); menu.className = 'menu';
+ menu.innerHTML = tpls.length ? tpls.map((t, i) => `<button type="button" data-i="${i}"><b>${esc(t.name)}</b><small>${esc(fillTemplate(t.text, x))}</small></button>`).join('') + '<div class="small faint" style="padding:6px 10px">复制后去平台里手动粘贴发送</div>'
+  : '<div class="small muted" style="padding:10px">还没有话术，到「工具与设置 → 话术库」添加</div>';
+ const r = btn.getBoundingClientRect();
+ menu.style.left = Math.max(8, Math.min(window.scrollX + r.left, window.scrollX + document.documentElement.clientWidth - 370)) + 'px'; menu.style.top = (window.scrollY + r.bottom + 4) + 'px';
+ document.body.appendChild(menu);
+ menu.addEventListener('click', async e => {
+  const b = e.target.closest('[data-i]'); if(!b) return;
+  const text = fillTemplate(tpls[b.dataset.i].text, x); menu.remove();
+  try{await navigator.clipboard.writeText(text); toast('话术已复制，去平台里粘贴回复吧')}catch{prompt('复制下面的话术：', text)}
+  if(x.status === 'new' && confirm('把这条线索标为「已联系」吗？')){await post('/api/items/' + id, {status: 'contacted'}, 'PATCH'); refreshItems(); refreshStats()}
+ });
+}
+document.addEventListener('click', e => {if(!e.target.closest('.menu,[data-reply]')) document.querySelectorAll('.menu').forEach(m => m.remove())});
+function filterParams(){return {q: $('search').value, platform: $('platformFilter').value, kind: $('kindFilter').value, intent: $('intentFilter').value, status: $('statusFilter').value, author: $('authorFilter').value,
+ lead_type: $('typeFilter').value, days: $('daysFilter').value, follow_up: $('followFilter').value, tag: $('tagFilter').value}}
+function itemParams(){return new URLSearchParams({...filterParams(), sort: $('sortFilter').value, limit: String(PAGE), offset: String(offset)})}
 async function refreshPlatformFilter(){
  const rows = await api('/api/platforms'); const sel = $('platformFilter'); const cur = sel.value;
  sel.innerHTML = '<option value="">全部平台</option>' + rows.map(r => `<option value="${esc(r.platform)}">${esc(r.platform)}（${r.count}）</option>`).join('');
@@ -498,25 +718,39 @@ async function refreshPlatformFilter(){
 }
 async function refreshItems(append=false){
  if(!append){offset = 0; refreshPlatformFilter().catch(() => {})}
- const rows = await api('/api/items?' + itemParams());
+ const fp = new URLSearchParams(filterParams());
+ $('exportCsv').href = '/api/export.csv?' + new URLSearchParams({...filterParams(), sort: $('sortFilter').value});
+ const [rows, total] = await Promise.all([api('/api/items?' + itemParams()), append ? Promise.resolve(null) : api('/api/items/count?' + fp)]);
+ if(total) refreshItems.total = total.count;
  const html = rows.map(itemMarkup).join('');
  $('items').innerHTML = append ? $('items').innerHTML + html : (html || '<div class="empty">没有符合条件的线索。<br>去「搜索与监控」输入关键词搜一次吧。</div>');
  offset += rows.length;
- $('listInfo').textContent = offset ? `显示 ${offset} 条 · 高意向在前` : '';
+ $('listInfo').textContent = offset ? `显示 ${offset} / ${refreshItems.total ?? offset} 条 · ${$('sortFilter').selectedOptions[0].text}` : '';
  $('loadMore').hidden = rows.length < PAGE;
  const a = $('authorFilter').value; $('authorFilterInfo').hidden = !a;
- if(a) $('authorFilterInfo').innerHTML = `只显示用户「${esc(a)}」的内容 <button class="btn sm" id="clearAuthor" type="button">取消</button>`;
+ const tg = $('tagFilter').value; $('authorFilterInfo').hidden = !a && !tg;
+ if(a || tg) $('authorFilterInfo').innerHTML = (a ? `只显示用户「${esc(a)}」的内容 ` : '') + (tg ? `只显示标签「#${esc(tg)}」 ` : '') + '<button class="btn sm" id="clearAuthor" type="button">取消</button>';
+ updateBulk();
 }
-for(const id of ['platformFilter','kindFilter','intentFilter','statusFilter']) $(id).addEventListener('change', () => refreshItems().catch(e => toast(e.message, true)));
+for(const id of ['platformFilter','kindFilter','intentFilter','statusFilter','typeFilter','daysFilter','followFilter','sortFilter']) $(id).addEventListener('change', () => refreshItems().catch(e => toast(e.message, true)));
 $('search').addEventListener('input', () => {clearTimeout(debounce); debounce = setTimeout(() => refreshItems().catch(e => toast(e.message, true)), 300)});
-$('clearFilters').addEventListener('click', () => {for(const id of ['search','platformFilter','kindFilter','intentFilter','statusFilter','authorFilter']) $(id).value = ''; refreshItems().catch(e => toast(e.message, true))});
-$('authorFilterInfo').addEventListener('click', e => {if(e.target.id === 'clearAuthor'){$('authorFilter').value = ''; refreshItems()}});
+$('clearFilters').addEventListener('click', () => {for(const id of FILTER_IDS) $(id).value = FILTER_DEFAULTS[id] ?? ''; refreshItems().catch(e => toast(e.message, true))});
+$('authorFilterInfo').addEventListener('click', e => {if(e.target.id === 'clearAuthor'){$('authorFilter').value = ''; $('tagFilter').value = ''; refreshItems()}});
 $('loadMore').addEventListener('click', () => refreshItems(true).catch(e => toast(e.message, true)));
 $('reload').addEventListener('click', () => refreshItems().catch(e => toast(e.message, true)));
-$('items').addEventListener('change', e => {const id = e.target.dataset.status; if(!id) return;
+$('items').addEventListener('change', e => {
+ const sel = e.target.dataset.sel; if(sel){e.target.checked ? selected.add(Number(sel)) : selected.delete(Number(sel)); updateBulk(); return}
+ const fu = e.target.dataset.follow; if(fu){const v = e.target.value; if(!v) return;
+  return guard(null, async () => {await post('/api/items/' + fu, {follow_up_at: followAt(v)}, 'PATCH'); toast(v === 'clear' ? '已清除提醒' : '已设置跟进提醒'); await refreshItems(); refreshStats()})()}
+ const id = e.target.dataset.status; if(!id) return;
  guard(null, async () => {await post('/api/items/' + id, {status: e.target.value}, 'PATCH'); toast('已更新为「' + STATUSES[e.target.value] + '」'); refreshStats()})()});
 $('items').addEventListener('click', e => {
  const body = e.target.closest('.body'); if(body){body.classList.toggle('clamp'); return}
+ const tg = e.target.closest('[data-tag]'); if(tg){$('tagFilter').value = tg.dataset.tag; refreshItems(); return}
+ const rp = e.target.closest('[data-reply]'); if(rp) return guard(rp, () => replyMenu(rp, rp.dataset.reply))();
+ const bl = e.target.closest('[data-block]');
+ if(bl) return guard(bl, async () => {if(!confirm('屏蔽这个用户？以后不再收录 TA 的内容，已收录的「待处理」内容会标为忽略。可以在「工具与设置 → 意向规则」里取消。')) return;
+  const r = await post('/api/settings/block-author?item_id=' + bl.dataset.block); toast(`已屏蔽「${r.blocked}」，${r.ignored} 条标为忽略`); await refreshItems(); refreshStats()})();
  const copy = e.target.closest('[data-copy-comment]');
  if(copy) return guard(copy, async () => {const x = await api('/api/items/' + copy.dataset.copyComment); const val = `${x.author || '未知用户'}：${x.text || ''}`;
   try{await navigator.clipboard.writeText(val); toast('评论已复制，可以在作品页里查找')}catch{prompt('复制下面的评论内容：', val)}})();
@@ -559,8 +793,7 @@ $('authorsReload').addEventListener('click', () => refreshAuthors().catch(e => t
 $('authorsClear').addEventListener('click', () => {$('authorsQuery').value = ''; $('authorsPlatform').value = ''; refreshAuthors().catch(e => toast(e.message, true))});
 $('authors').addEventListener('click', e => {
  const b = e.target.closest('[data-author-filter]'); if(!b) return;
- for(const id of ['search','platformFilter','kindFilter','intentFilter','statusFilter']) $(id).value = '';
- $('authorFilter').value = b.dataset.authorFilter; showTab('leads');
+ openLeads({authorFilter: b.dataset.authorFilter, typeFilter: ''});
 });
 
 /* ---------------------------------------------------------------- tools */
@@ -577,6 +810,31 @@ $('ingest').addEventListener('click', guard($('ingest'), async () => {const r = 
  toast(`采集 ${r.fetched} 条，匹配 ${r.matched}，新增 ${r.inserted}，重复 ${r.duplicates}`); refreshStats(); refreshLogs()}));
 $('syncAll').addEventListener('click', guard($('syncAll'), async () => {const r = await post('/api/ingest-all?query=' + encodeURIComponent($('query').value));
  toast(r.configured_sources ? `已同步 ${r.configured_sources} 个授权接口，详情见采集记录` : '还没有配置任何授权接口'); refreshStats(); refreshLogs()}));
+const lines = v => String(v || '').split(/[\n,，、]/).map(x => x.trim()).filter(Boolean);
+async function refreshSettings(){
+ const x = await api('/api/settings');
+ $('setBuyer').value = x.buyer_words.join('\n'); $('setSeller').value = x.seller_words.join('\n');
+ $('setExclude').value = x.exclude_words.join('\n'); $('setBlocked').value = x.blocked_authors.join('\n');
+ $('setHideSellers').checked = x.hide_sellers; $('setNotify').value = x.notify_min_score;
+}
+$('saveSettings').addEventListener('click', guard($('saveSettings'), async () => {
+ const r = await post('/api/settings', {buyer_words: lines($('setBuyer').value), seller_words: lines($('setSeller').value), exclude_words: lines($('setExclude').value),
+  blocked_authors: lines($('setBlocked').value), hide_sellers: $('setHideSellers').checked, notify_min_score: Math.min(100, Math.max(0, Number($('setNotify').value) || 80))}, 'PUT');
+ $('settingsResult').textContent = r.rescored ? `已保存，${r.rescored} 条已有线索按新规则重新打分` : '已保存'; toast('规则已保存'); refreshStats();
+}));
+async function refreshTemplates(){
+ templatesCache = await api('/api/templates');
+ $('templates').innerHTML = templatesCache.length ? templatesCache.map(t => `<div class="tpl row"><b style="min-width:90px">${esc(t.name)}</b><span class="small muted grow">${esc(t.text)}</span><button class="btn sm" data-tpl-edit="${t.id}">修改</button><button class="btn sm danger" data-tpl-del="${t.id}">删除</button></div>`).join('') : '<p class="small muted">还没有话术</p>';
+}
+$('tplForm').addEventListener('submit', e => {e.preventDefault(); guard(null, async () => {await post('/api/templates', {name: $('tplName').value.trim(), text: $('tplText').value.trim()}); $('tplForm').reset(); await refreshTemplates(); toast('话术已添加')})()});
+$('templates').addEventListener('click', e => {
+ const d = e.target.closest('[data-tpl-del]'), ed = e.target.closest('[data-tpl-edit]');
+ if(d) return guard(d, async () => {if(!confirm('删除这条话术？')) return; await post('/api/templates/' + d.dataset.tplDel, null, 'DELETE'); await refreshTemplates()})();
+ if(ed) return guard(ed, async () => {const t = templatesCache.find(x => x.id === Number(ed.dataset.tplEdit)); const text = prompt('修改话术内容：', t.text); if(text === null || !text.trim()) return;
+  await post('/api/templates/' + t.id, {name: t.name, text: text.trim()}, 'PUT'); await refreshTemplates(); toast('已修改')})();
+});
+$('testAlert').addEventListener('click', guard($('testAlert'), async () => {const r = await post('/api/alerts/test');
+ $('alertResult').innerHTML = r.sent ? '<span class="good">已发送，去群里看看</span>' : `<span class="bad">没发出去：${esc(r.reason || ('状态码 ' + r.status_code + ' ' + (r.response || '')))}</span>`}));
 async function refreshKeywords(){const ks = await api('/api/keywords');
  $('keywords').innerHTML = ks.length ? ks.map(k => `<div class="kw row"><label class="chip"><input type="checkbox" data-kw-toggle="${k.id}" ${k.active ? 'checked' : ''}><span>${esc(k.name)}</span></label><span class="small muted grow">包含：${esc(k.terms.join('、'))}${k.excludes.length ? ' · 排除：' + esc(k.excludes.join('、')) : ''}</span><button class="btn sm danger" data-kw-del="${k.id}">删除</button></div>`).join('') : '<p class="small muted">还没有关键词组</p>'}
 $('keywordForm').addEventListener('submit', e => {e.preventDefault(); guard(null, async () => {await post('/api/keywords', {name: $('kn').value, terms: terms($('kt').value), excludes: terms($('ke').value)}); $('keywordForm').reset(); await refreshKeywords(); toast('关键词组已添加')})()});
@@ -602,6 +860,7 @@ $('cnManualForm').addEventListener('submit', e => {e.preventDefault(); guard($('
   if(job) watchJob(job);
   const s = await api('/api/browser-login'); if(s.status === 'running') $('loginStatus').textContent = s.message;
  }catch(e){toast(e.message, true)}
+ for(const [k, v] of Object.entries(FILTER_DEFAULTS)) $(k).value = v;
  showTab(store.get('tab', 'home'));
 })();
 </script>

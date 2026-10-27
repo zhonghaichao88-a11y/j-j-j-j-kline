@@ -433,7 +433,7 @@ def init_db():
                 save_items(demo_items())
 
 
-SCORE_VERSION = "4.0"
+SCORE_VERSION = "4.0.1"
 
 
 def _apply_analysis(item, result):
@@ -517,8 +517,9 @@ def _relevant(item, query):
     if (item.source or "").endswith("评论") or item.source in BROWSER_WORK_SOURCES or item.source in ("政府采购", "Demo"):
         return True
     hay = _norm((item.title or "") + " " + (item.text or ""))
+    # Every word must appear ("求推荐 CRM" is not satisfied by "求推荐耳塞"), like a search engine AND.
     words = [_norm(w) for w in re.split(r"[\s,，、|]+", query or "") if _norm(w)]
-    return not words or any(w in hay for w in words) or _norm(query) in hay
+    return not words or all(w in hay for w in words)
 
 
 def save_items(data, *, manual_query="", return_ids=False, excludes=()):
@@ -1213,7 +1214,7 @@ def overview(days: int = Query(14, ge=1, le=90)):
     """Numbers for the dashboard: today, follow-ups due, funnel, per-day and per-platform counts."""
     now = datetime.now(timezone.utc)
     cn = timezone(timedelta(hours=8))
-    today = now.astimezone(cn).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+    today = (now - timedelta(days=1)).isoformat()  # "last 24 hours", the same window the lead filter uses
     since = (now - timedelta(days=days)).isoformat()
     with Session() as s:
         count = lambda *conds: s.scalar(select(func.count()).select_from(Item).where(Item.source != "Demo", *conds)) or 0

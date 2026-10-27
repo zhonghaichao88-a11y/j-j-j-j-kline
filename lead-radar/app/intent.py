@@ -32,8 +32,13 @@ BUYER_STRONG = [
     (r"(?:想|准备|打算|计划|需要).{0,3}(?:买|购买|入手|采购|上一套|做一个|找一个|找个|定制|开发)", "有购买计划"),
     (r"在哪(?:里)?(?:买|购买|下单|能买)|怎么(?:买|购买|下单|报名|联系)|求(?:链接|联系方式|店铺|购买方式)", "问怎么买"),
     (r"预算(?:\d|大概|有|在|是|充足|多少)", "有预算"),
-    (r"\b(?:looking\s+for|need\s+(?:a|an|some)|want\s+to\s+buy|request\s+a\s+quote|where\s+can\s+i\s+buy|"
-     r"recommend\s+(?:a|an|me)|any\s+recommendations?|alternatives?\s+to|switching\s+from|how\s+much\s+(?:does|is|for))\b", "looking for"),
+    # English: "looking for" alone is every second developer question; require a product-ish noun.
+    (r"\b(?:looking\s+for|need|searching\s+for|recommend(?:ation)?s?\s+for)\s+(?:a|an|some|good|the\s+best|any)?\s*"
+     r"(?:[\w-]+\s+){0,4}(?:tool|software|service|platform|app|vendor|agency|provider|solution|crm|consultant|"
+     r"freelancer|contractor|developer|company|supplier|saas)s?\b", "looking for"),
+    (r"\b(?:want\s+to\s+buy|request\s+a\s+quote|where\s+can\s+i\s+buy|any\s+recommendations?|"
+     r"(?:good|cheaper|better)\s+alternatives?\s+to|alternatives?\s+to\s+\w+\?|switching\s+from|"
+     r"how\s+much\s+(?:does|do|would|for)|can\s+(?:anyone|someone)\s+recommend|willing\s+to\s+pay|hire\s+(?:a|an|someone))\b", "looking for"),
 ]
 BUYER_WEAK = [
     (r"想了解|有没有|怎么做|怎么样|好用吗|值得(?:买|入手|用)吗?|求教|请教|咨询一下|问一下|有人知道|有人用过", "咨询/提问"),
@@ -50,7 +55,11 @@ SELLER = [
     (r"(?:本公司|我司|我们公司|本工作室|我们团队|本人)(?:专业|专注|长期|提供|承接|主营)|专业(?:承接|定制|代做|代办|提供)|长期(?:承接|接单)|承接各类", "商家自我介绍"),
     (r"厂家直(?:销|供)|一手货源|量大从优|价格优惠|限时(?:优惠|特价|折扣)|优惠活动|包邮|官方旗舰|点击(?:链接|主页)|主页有|看主页", "促销广告"),
     (r"招聘|诚聘|急聘|岗位职责|任职要求|薪资|兼职", "招聘信息"),
-    (r"\b(?:we\s+offer|our\s+(?:team|agency|company)\s+(?:provides|offers)|dm\s+(?:me|us)\s+for|book\s+a\s+(?:demo|call)|limited\s+offer|sign\s+up\s+(?:now|today))\b", "seller ad"),
+    (r"深度解析|一次讲清|避坑(?:指南|清单)|(?:优先|首选)推荐|附(?:避坑|清单|教程)|(?:\d+|十)(?:款|个).{0,8}(?:横评|对比|测评)", "软文/测评文"),
+    (r"\b(?:we\s+(?:offer|help|build|provide)|our\s+(?:team|agency|company|platform|solution|product)|dm\s+(?:me|us)|"
+     r"book\s+a\s+(?:demo|call)|limited\s+offer|sign\s+up|get\s+started|free\s+trial|learn\s+more|contact\s+us|"
+     r"link\s+in\s+bio|helps?\s+(?:businesses|teams|companies|brands|manufacturers|you)|check\s+out\s+our|demo\s+account)\b", "seller ad"),
+    (r"(?:#[^\s#]+\s*){4,}|(?:#[^\s#]+.*){5,}", "话题标签堆砌"),
 ]
 
 

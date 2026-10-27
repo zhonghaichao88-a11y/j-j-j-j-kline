@@ -197,6 +197,13 @@ def test_reddit_oauth(monkeypatch):
     ("We offer AI agents. Book a demo today", "low", "seller"),
     ("这个工具好用吗？", "medium", "question"),
     ("今天学习了，没有购买需求", "low", "other"),
+    # 4.0.1 precision: generic English and marketing posts
+    ("I still teach OpenGL. But compared to the new APIs I would argue", "low", "other"),
+    ("I am looking for free and open source CRM with a dashboard", "high", "buyer"),
+    ("Can anyone recommend a bookkeeping service?", "high", "buyer"),
+    ("Today's CRM term is: Lead Management. Learn more: https://x.example", "low", "seller"),
+    ("Great tool #CRM #Sales #Leads #Growth #SaaS", "low", "seller"),
+    ("2026 年跨境 ERP 软件哪个好用？深度解析（附避坑清单）", "low", "seller"),
 ])
 def test_intent_buyer_vs_seller(text, intent, lead_type):
     r = analyze(text)
@@ -233,6 +240,11 @@ def test_save_filters_blocklist_excludes_relevance(context):
     matched, inserted = m.save_items(rows, manual_query="CRM")
     assert inserted == 1
     assert m.save_items([_item("无关但排除词 abc")], manual_query="CRM", excludes=["abc"]) == (0, 0)
+
+
+def test_relevance_requires_every_word(context):
+    m, _ = context
+    assert m.save_items([_item("求推荐静音耳塞"), _item("求推荐一个 crm 系统")], manual_query="求推荐 CRM")[1] == 1
 
 
 def test_hide_sellers_setting(context):
