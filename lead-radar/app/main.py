@@ -863,7 +863,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.1.4", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.1.5", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -905,7 +905,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.1.4", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.1.5", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1407,8 +1407,13 @@ def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts
         if browser_selected:
             if not BROWSER_EXEC_LOCK.acquire(blocking=False):
                 with BROWSER_JOB_LOCK:
-                    BROWSER_JOBS[job_id]["events"].append("监控任务正在使用浏览器，本次采集会在它结束后自动开始…")
-                BROWSER_EXEC_LOCK.acquire()
+                    BROWSER_JOBS[job_id]["events"].append("浏览器正被别的任务使用，本次采集会在它结束后自动开始…")
+                while not BROWSER_EXEC_LOCK.acquire(timeout=2):
+                    if LOGIN_JOB["status"] == "running":
+                        msg = "登录窗口还开着：请先在登录窗口里登录完并关掉它（或点首页「✖ 关闭登录窗口」），再点搜索。"
+                        for p in browser_selected:
+                            event(p, "error", [], msg)
+                        return
             try:
                 collect_in_browser(query, browser_selected, DATA_DIR / "browser_profile", event,
                                    max_posts=max_posts, comments_per_post=max_comments,
@@ -1477,6 +1482,8 @@ def search_now(inp: SearchNowIn, request: Request):
         raise HTTPException(422, "以下来源尚未配置或不可用：" + "、".join(missing))
     if any(p in BROWSER_PLATFORMS for p in platforms):
         _require_local_browser(request)
+        if LOGIN_JOB["status"] == "running":
+            raise HTTPException(409, "登录窗口还开着：请先登录完并关掉登录窗口（或点「✖ 关闭登录窗口」），再搜索")
     return _start_search_job(query, platforms, inp.max_posts, inp.max_comments, inp.sort, clean_words(inp.excludes))
 
 
@@ -1563,7 +1570,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.1.4", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.1.5", build=BUILD_ID, root=str(ROOT))
     return result
 
 

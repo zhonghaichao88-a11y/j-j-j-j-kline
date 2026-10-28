@@ -703,9 +703,10 @@ def _launch(pw, profile_dir: Path, headless: bool = False, route: str | None = N
             missing = ("executable doesn't exist" in text or "is not found" in text or
                        "not installed" in text or "no such file" in text)
             if not missing:
-                # e.g. the profile is still open in another collector window
-                raise RuntimeError("浏览器无法启动：如果另一个采集/登录/定位浏览器窗口还开着，请先关闭它。"
-                                   + str(exc).splitlines()[0][:160]) from exc
+                # e.g. the profile is still open in the login window or another collector window
+                raise RuntimeError("采集浏览器启动不了：登录窗口（或另一个采集窗口）还开着，占用了浏览器资料。"
+                                   "请先关掉它（首页点「✖ 关闭登录窗口」，或在任务栏右键 Edge 关闭所有窗口），再搜索。"
+                                   + str(exc).splitlines()[0][:120]) from exc
     raise RuntimeError(NO_BROWSER_MSG + "（也没有找到 Edge/Chrome）") from last_error
 
 
@@ -874,8 +875,8 @@ def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
         try:
             return (_launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel,
                             background=background, **kwargs), describe_route(route, channel))
-        except RuntimeError:
-            if not channel:
+        except RuntimeError as exc:
+            if not channel or NO_BROWSER_MSG not in str(exc):
                 raise
     best = None            # (opened count, route, channel, failing hosts)
     tried = []
@@ -883,8 +884,10 @@ def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
         try:
             ctx = _launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel,
                           background=background, **kwargs)
-        except RuntimeError:
-            if channel:          # e.g. Edge not installed: just skip this option
+        except RuntimeError as exc:
+            # Edge not installed: try the next option. Anything else (e.g. the login window still
+            # holds the profile) must be shown as it is, not turned into "浏览器打不开".
+            if channel and NO_BROWSER_MSG in str(exc):
                 continue
             raise
         desc = describe_route(route, channel)
@@ -1299,10 +1302,10 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
             for platform in platforms:
                 label = SUPPORTED[platform]
                 if platform in LOGIN_REQUIRED and login_state(cookies, platform) is False:
-                    # Don't open a page that can only show a login wall; say what to do instead.
-                    on_event(platform, "error", [], f"{label}还没有登录（采集浏览器里没有{label}的登录信息）。"
-                             "请先点首页「① 打开浏览器去登录」，在弹出的浏览器里登录后关闭窗口，再搜索。")
-                    continue
+                    # Only a hint (cookie names can change): still open the page; if it really shows a
+                    # login wall the window comes to the front and waits for the person.
+                    on_event(platform, "searching", [], f"采集浏览器里没找到{label}的登录信息，先打开看看；"
+                             f"如果要求登录，窗口会弹出来，直接在里面登录即可。")
                 on_event(platform, "searching", [], f"正在打开{label}搜索页（{'最新优先' if sort == 'latest' else '综合排序'}）。")
                 try:
                     page.bring_to_front()
@@ -1547,10 +1550,25 @@ def open_login_pages(platforms: list[str], profile_dir: Path, on_status: Callabl
                          "请在每个标签页扫码登录，看到自己的头像就是登录好了；全部登录完后关闭这个浏览器窗口。")
     started = time.time()
     seen_open = False   # the browser really ran with this profile (vs. failed to start)
+    had_windows, no_window_since = False, None
     while time.time() - started < max_minutes * 60:
         time.sleep(2)
         is_open = _profile_open(profile)
         seen_open = seen_open or is_open
+        if os.name == "nt" and proc.poll() is None:
+            # Edge may keep running in the background after its last window is closed; that would
+            # keep the profile locked and searches blocked. All windows gone = the person is done.
+            if _windows_of(proc.pid):
+                had_windows, no_window_since = True, None
+            elif had_windows:
+                no_window_since = no_window_since or time.time()
+                if time.time() - no_window_since > 6:   # give it a moment to write its cookies
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except Exception:
+                        pass
+                    break
         if proc.poll() is None or is_open:
             continue
         if not seen_open:

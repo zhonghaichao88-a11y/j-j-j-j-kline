@@ -501,12 +501,15 @@ def test_login_refuses_when_profile_already_open(monkeypatch, tmp_path):
         bc.open_login_pages(["douyin"], profile, lambda *a: None)
 
 
-def test_collect_skips_platform_that_is_not_logged_in(monkeypatch, tmp_path):
-    events = []
+def test_missing_login_cookie_is_only_a_hint(monkeypatch, tmp_path):
+    """The cookie check can be wrong (Douyin logged in but reported as not): still open the page."""
+    events, opened = [], []
 
     class Page:
-        def goto(self, *a, **k): raise AssertionError("must not open a login-only page")
-        def evaluate(self, *a, **k): return None
+        def bring_to_front(self): pass
+        def goto(self, url, **k): opened.append(url)
+        def wait_for_timeout(self, ms): pass
+        def evaluate(self, *a, **k): return []
 
     class Ctx:
         pages = [Page()]
@@ -519,8 +522,39 @@ def test_collect_skips_platform_that_is_not_logged_in(monkeypatch, tmp_path):
     import playwright.sync_api as sync_api
     monkeypatch.setattr(sync_api, "sync_playwright", lambda: PWCM())
     monkeypatch.setattr(bc, "_launch_reachable", lambda *a, **k: (Ctx(), "x"))
-    bc.collect_in_browser("GPT", ["douyin"], tmp_path / "p", lambda p, st, b, m: events.append((p, st, m)))
-    assert events[-1][1] == "error" and "还没有登录" in events[-1][2] and "打开浏览器去登录" in events[-1][2]
+    monkeypatch.setattr(bc, "_wait_until_usable", lambda *a, **k: ([], ""))
+    bc.collect_in_browser("GPT", ["douyin"], tmp_path / "p", lambda p, st, b, m: events.append((p, st, m)),
+                          sort="relevance")
+    assert opened and "douyin.com/search" in opened[0]
+    assert any("没找到抖音的登录信息" in m for _, _, m in events)
+
+
+def test_profile_in_use_is_reported_not_called_missing_browser(monkeypatch, tmp_path):
+    """4.1.4 bug: the login Edge still held the profile, the launch error was swallowed and the
+    search said the browser couldn't be opened at all."""
+    monkeypatch.delenv("BROWSER_CHANNEL", raising=False)
+    monkeypatch.setattr(bc, "find_browser", lambda c: "C:/Edge/msedge.exe" if c == "msedge" else "")
+
+    class Chromium:
+        def launch_persistent_context(self, **kw):
+            raise Exception("Target page, context or browser has been closed: user data directory is already in use")
+
+    class PW:
+        chromium = Chromium()
+    with pytest.raises(RuntimeError, match="登录窗口"):
+        bc._launch_reachable(PW(), tmp_path / "browser_profile", "https://www.douyin.com/")
+
+
+def test_search_refused_while_login_window_open(context):
+    m, client = context
+    m.LOGIN_JOB["status"] = "running"
+    try:
+        r = client.post("/api/search-now", json={"query": "GPT", "platforms": ["douyin"]})
+        assert r.status_code == 409 and "登录窗口还开着" in r.json()["detail"]
+        # public sources don't need the browser and still work
+        assert client.post("/api/search-now", json={"query": "GPT", "platforms": ["hackernews"]}).status_code == 202
+    finally:
+        m.LOGIN_JOB["status"] = "idle"
 
 
 def test_login_state_endpoint_and_background_setting(context, monkeypatch):
