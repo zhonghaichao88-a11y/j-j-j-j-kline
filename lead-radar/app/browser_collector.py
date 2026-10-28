@@ -562,6 +562,94 @@ def friendly_net_error(exc) -> str:
 
 
 OFFSCREEN = "--window-position=-32000,-32000"
+ON_SCREEN = ["--window-position=60,40", "--window-size=1300,860"]
+
+
+def _forget_window_position(profile: Path):
+    """A background run leaves "window_placement: -32000,-32000" in the profile and the next
+    visible window (e.g. the login window) would reopen off-screen/minimised. Drop it."""
+    prefs = profile / "Default" / "Preferences"
+    try:
+        data = json.loads(prefs.read_text(encoding="utf-8"))
+        if isinstance(data.get("browser"), dict) and "window_placement" in data["browser"]:
+            del data["browser"]["window_placement"]
+            prefs.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+# ---------------------------------------------------------------- Windows window handling
+# A window opened by a background program is not allowed to take the foreground on Windows: it
+# opens *behind* the window you are looking at, under the same taskbar icon as your own Edge, and
+# looks like "nothing opened". These helpers find the login browser's windows and raise/close them.
+def _windows_of(pid: int = 0, title_mark: str = ""):
+    """Visible top-level windows of a process, or whose title contains title_mark."""
+    if os.name != "nt" or not (pid or title_mark):
+        return []
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        length = user32.GetWindowTextLengthW(hwnd)
+        if not (length and user32.IsWindowVisible(hwnd)):
+            return True
+        if pid and owner.value == pid:
+            found.append(hwnd)
+        elif title_mark:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if title_mark in buf.value:
+                found.append(hwnd)
+        return True
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def bring_to_front(pid: int = 0, wait_seconds: float = 0, title_mark: str = "") -> bool:
+    """Restore the login window, move it on-screen and on top of everything (best effort)."""
+    if os.name != "nt" or not (pid or title_mark):
+        return False
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    end = time.time() + wait_seconds
+    windows = _windows_of(pid, title_mark)
+    while not windows and time.time() < end:
+        time.sleep(0.5)
+        windows = _windows_of(pid, title_mark)
+    for hwnd in windows:
+        try:
+            user32.ShowWindow(hwnd, 9)                                   # SW_RESTORE (also un-minimises)
+            user32.SetWindowPos(hwnd, wintypes.HWND(-1), 60, 40, 1300, 860, 0x0040)   # HWND_TOPMOST, show
+            user32.SetWindowPos(hwnd, wintypes.HWND(-2), 0, 0, 0, 0, 0x0003)          # back to normal z-order
+            user32.keybd_event(0x12, 0, 0, 0)                            # ALT tap: lets SetForegroundWindow work
+            user32.keybd_event(0x12, 0, 2, 0)
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+    return bool(windows)
+
+
+def close_windows(pid: int) -> bool:
+    """Ask the browser to close normally (WM_CLOSE), as if the person clicked X."""
+    if os.name != "nt" or not pid:
+        return False
+    import ctypes
+    windows = _windows_of(pid)
+    for hwnd in windows:
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+    return bool(windows)
+
+
+LOGIN_PROCESS = {"proc": None}
+WINDOW_MARK = "【Lead Radar 需要你操作】"
 
 
 def _launch(pw, profile_dir: Path, headless: bool = False, route: str | None = None,
@@ -576,6 +664,9 @@ def _launch(pw, profile_dir: Path, headless: bool = False, route: str | None = N
         # Collect in a window parked off-screen: it doesn't jump in front of what you are doing.
         # It is moved on-screen only when a login/verification needs a human (see _show_window).
         extra_args.append(OFFSCREEN)
+    elif not headless:
+        _forget_window_position(profile_dir)
+        extra_args += ON_SCREEN
     options = dict(user_data_dir=str(profile_dir), headless=headless,
                    viewport={"width": 1330, "height": 880}, locale="zh-CN", **kwargs)
     if os.getenv("BROWSER_EXECUTABLE", "").strip():
@@ -867,6 +958,14 @@ def _show_window(page, show: bool):
             cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"windowState": "normal"}})
             cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"left": 80, "top": 40, "width": 1330, "height": 880}})
             page.bring_to_front()
+            if os.name == "nt":
+                # Windows keeps windows of background programs behind the active one: find ours by a
+                # title marker and raise it like the login window.
+                try:
+                    page.evaluate("m => { if (!document.title.startsWith(m)) document.title = m + document.title }", WINDOW_MARK)
+                    bring_to_front(title_mark=WINDOW_MARK, wait_seconds=2)
+                except Exception:
+                    pass
         else:
             # back off-screen (where background collection started); minimising isn't honoured everywhere
             cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {"windowState": "normal"}})
@@ -1345,15 +1444,20 @@ def open_login_pages(platforms: list[str], profile_dir: Path, on_status: Callabl
             raise RuntimeError(NO_BROWSER_MSG) from exc
     if not exe or not os.path.exists(exe):
         raise RuntimeError(NO_BROWSER_MSG + "（也没有找到 Edge/Chrome）")
+    _forget_window_position(profile)
     args = [exe, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
-            "--disable-background-mode", "--new-window", *_proxy_args(route)]
+            "--disable-background-mode", "--new-window", *ON_SCREEN, *_proxy_args(route)]
     if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
         args.append("--no-sandbox")   # Chromium refuses to run as root otherwise (servers / containers)
     proc = subprocess.Popen(args + urls, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             close_fds=True)
+    LOGIN_PROCESS["proc"] = proc
     names = "、".join(SUPPORTED[p] for p in platforms)
-    on_status("running", f"已用{BROWSER_NAMES.get(channel, '浏览器')}打开 {names}（网络方式：{describe_route(route, channel)}）。"
-                         "请在每个标签页扫码/输入验证码登录，看到自己的头像就是登录好了；全部登录完后关闭这个浏览器窗口。")
+    raised = bring_to_front(proc.pid, wait_seconds=10)
+    icon = {"msedge": "Edge", "chrome": "Chrome"}.get(channel, "浏览器")
+    where = "已弹到最前面" if raised else f"如果没看到，请点任务栏上的 {icon} 图标找一下（可能在别的窗口后面），或点下面的「把登录窗口调到前面」"
+    on_status("running", f"登录窗口已打开（{BROWSER_NAMES.get(channel, '浏览器')}，{names}，{where}）。"
+                         "请在每个标签页扫码登录，看到自己的头像就是登录好了；全部登录完后关闭这个浏览器窗口。")
     started = time.time()
     seen_open = False   # the browser really ran with this profile (vs. failed to start)
     while time.time() - started < max_minutes * 60:

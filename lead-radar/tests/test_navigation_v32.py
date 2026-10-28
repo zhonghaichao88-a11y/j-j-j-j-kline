@@ -118,4 +118,4 @@ def test_interface_labels_explain_limitations(context):
     assert '尝试高亮评论' in html and '打开评论直达链接' in html
     assert '暂不支持评论直达' in html
     assert '评论跳转说明' in html
-    assert client.get('/api/health').json()['version']=='4.1.2'
+    assert client.get('/api/health').json()['version']=='4.1.3'

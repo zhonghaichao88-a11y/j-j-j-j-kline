@@ -35,6 +35,7 @@ from .intent import analyze
 from .browser_collector import (
     SUPPORTED as BROWSER_PLATFORMS, LABEL_TO_PLATFORM, canonical_post_url, collect_in_browser,
     locate_visible_comment, open_login_pages, safe_post_url, saved_login_states, browser_channel, BROWSER_NAMES,
+    LOGIN_PROCESS, bring_to_front, close_windows,
 )
 from .adapters import (
     PLATFORM_ENV, PublicItem, demo_items, fetch_github, fetch_hackernews, fetch_platform,
@@ -862,7 +863,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.1.2", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.1.3", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -904,7 +905,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.1.2", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.1.3", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1519,6 +1520,32 @@ def browser_login(inp: BrowserLoginIn, request: Request):
     return dict(LOGIN_JOB)
 
 
+@app.post("/api/browser-login/front")
+def browser_login_front(request: Request):
+    """Bring the login window to the front (Windows opens it behind other windows)."""
+    _require_local_browser(request)
+    proc = LOGIN_PROCESS["proc"]
+    if LOGIN_JOB["status"] != "running" or proc is None or proc.poll() is not None:
+        raise HTTPException(409, "登录窗口没有在运行，请重新点「打开浏览器去登录」")
+    return {"raised": bring_to_front(proc.pid, wait_seconds=3)}
+
+
+@app.post("/api/browser-login/close")
+def browser_login_close(request: Request):
+    """Close a login window you can't find, so searches aren't blocked by it."""
+    _require_local_browser(request)
+    proc = LOGIN_PROCESS["proc"]
+    if proc is None or proc.poll() is not None:
+        return {"closed": True}
+    if not close_windows(proc.pid):
+        proc.terminate()
+    try:
+        proc.wait(timeout=12)
+    except Exception:
+        proc.kill()
+    return {"closed": True}
+
+
 @app.get("/api/browser-login-state")
 def browser_login_state():
     """Which platforms the collector browser is signed in to (from the saved cookies on disk)."""
@@ -1536,7 +1563,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.1.2", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.1.3", build=BUILD_ID, root=str(ROOT))
     return result
 
 

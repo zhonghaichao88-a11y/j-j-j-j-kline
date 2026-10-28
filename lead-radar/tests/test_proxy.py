@@ -54,11 +54,11 @@ def test_launch_passes_proxy_and_keeps_args(monkeypatch, tmp_path, system_proxy)
     class FakePW:
         chromium = FakeChromium()
     b._launch(FakePW(), tmp_path, args=['--disable-notifications'])
-    assert seen['proxy']['server'] == 'http://127.0.0.1:7890' and seen['args'] == ['--disable-notifications']
+    assert seen['proxy']['server'] == 'http://127.0.0.1:7890' and seen['args'] == ['--disable-notifications', *b.ON_SCREEN]
     monkeypatch.setenv('BROWSER_PROXY', 'direct')
     seen.clear()
     b._launch(FakePW(), tmp_path, args=['--disable-notifications'])
-    assert 'proxy' not in seen and seen['args'] == ['--disable-notifications', '--no-proxy-server']
+    assert 'proxy' not in seen and seen['args'] == ['--disable-notifications', '--no-proxy-server', *b.ON_SCREEN]
 
 
 @pytest.mark.parametrize('raw,expect', [

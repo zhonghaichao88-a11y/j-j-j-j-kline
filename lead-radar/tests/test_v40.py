@@ -456,6 +456,7 @@ def test_login_window_is_a_plain_browser_and_waits_for_close(monkeypatch, tmp_pa
     launched = {}
 
     class Proc:
+        pid = 1
         def __init__(self, args, **kw):
             launched["args"] = args
             self.t = _time.time()
@@ -548,6 +549,7 @@ def test_first_login_opens_window_immediately_without_network_probe(monkeypatch,
     launched = {}
 
     class Proc:
+        pid = 1
         def __init__(self, args, **kw): launched["args"] = args
         def poll(self): return 0
     monkeypatch.setattr(bc.subprocess, "Popen", Proc)
@@ -574,3 +576,78 @@ def test_launch_uses_found_browser_path(monkeypatch, tmp_path):
         chromium = Chromium()
     assert bc._launch(PW(), tmp_path, channel="msedge") == "ctx"
     assert seen["executable_path"].endswith("msedge.exe") and "channel" not in seen
+
+
+# ---------------------------------------------------------------- 4.1.3: login window you can actually see
+def test_offscreen_placement_from_background_runs_is_forgotten(tmp_path):
+    import json
+    prefs = tmp_path / "Default" / "Preferences"
+    prefs.parent.mkdir(parents=True)
+    prefs.write_text(json.dumps({"browser": {"window_placement": {"left": -32000, "top": -32000}, "x": 1}}))
+    bc._forget_window_position(tmp_path)
+    assert json.loads(prefs.read_text()) == {"browser": {"x": 1}}
+    bc._forget_window_position(tmp_path / "missing")   # no profile yet: no error
+
+
+def test_visible_launch_opens_on_screen_background_off_screen(monkeypatch, tmp_path):
+    monkeypatch.setattr(bc, "find_browser", lambda c: "")
+    seen = []
+
+    class Chromium:
+        def launch_persistent_context(self, **kw):
+            seen.append(kw["args"]); return "ctx"
+
+    class PW:
+        chromium = Chromium()
+    bc._launch(PW(), tmp_path, args=[])
+    bc._launch(PW(), tmp_path, args=[], background=True)
+    assert "--window-position=60,40" in seen[0] and bc.OFFSCREEN in seen[1]
+
+
+def test_login_window_args_on_screen(monkeypatch, tmp_path):
+    monkeypatch.delenv("BROWSER_CHANNEL", raising=False)
+    monkeypatch.setenv("BROWSER_PROXY", "direct")
+    exe = tmp_path / "msedge.exe"; exe.write_text("")
+    monkeypatch.setattr(bc, "find_browser", lambda c: str(exe) if c == "msedge" else "")
+    launched = {}
+
+    class Proc:
+        pid = 4321
+        def __init__(self, args, **kw): launched["args"] = args
+        def poll(self): return 0
+    monkeypatch.setattr(bc.subprocess, "Popen", Proc)
+    monkeypatch.setattr(bc.time, "sleep", lambda s: None)
+    checks = iter([False, True, False])
+    monkeypatch.setattr(bc, "_profile_open", lambda p: next(checks, False))
+    monkeypatch.setattr(bc, "saved_login_states", lambda d, p: {})
+    raised = []
+    monkeypatch.setattr(bc, "bring_to_front", lambda pid, wait_seconds=0: raised.append(pid) or False)
+    msgs = []
+    bc.open_login_pages(["douyin"], tmp_path / "browser_profile", lambda st, m: msgs.append(m))
+    assert "--window-position=60,40" in launched["args"] and raised == [4321]
+    assert "任务栏" in msgs[0] and bc.LOGIN_PROCESS["proc"].pid == 4321
+
+
+def test_login_front_and_close_endpoints(context, monkeypatch):
+    m, client = context
+    m.LOGIN_PROCESS["proc"] = None
+    assert client.post("/api/browser-login/front").status_code == 409
+    assert client.post("/api/browser-login/close").json() == {"closed": True}
+
+    class Proc:
+        pid, terminated = 77, False
+        def poll(self): return None
+        def terminate(self): Proc.terminated = True
+        def wait(self, timeout=None): return 0
+    m.LOGIN_PROCESS["proc"] = Proc()
+    m.LOGIN_JOB["status"] = "running"
+    monkeypatch.setattr(m, "bring_to_front", lambda pid, wait_seconds=0: pid == 77)
+    assert client.post("/api/browser-login/front").json() == {"raised": True}
+    monkeypatch.setattr(m, "close_windows", lambda pid: False)   # no window found -> terminate the process
+    assert client.post("/api/browser-login/close").json() == {"closed": True} and Proc.terminated
+    m.LOGIN_PROCESS["proc"] = None
+    m.LOGIN_JOB["status"] = "idle"
+
+
+def test_window_helpers_are_noops_off_windows():
+    assert bc.bring_to_front(123) is False and bc.close_windows(123) is False and bc._windows_of(123) == []

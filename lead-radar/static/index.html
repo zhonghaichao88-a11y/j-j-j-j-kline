@@ -181,6 +181,7 @@ details.tool>.tool-body{padding:0 20px 18px}
    <div class="chips" id="loginPlatforms"></div>
    <div class="row small" id="loginStates" style="margin-top:10px;gap:6px"></div>
    <div class="actions-main"><button class="btn" id="loginButton" type="button">🔑 打开浏览器去登录</button><button class="btn ghost" id="netCheckButton" type="button">🩺 打不开？网络诊断</button><span class="muted small" id="loginStatus"></span></div>
+   <div class="row" id="loginHelp" hidden style="margin-top:8px"><button class="btn sm primary" id="loginFront" type="button">🔝 把登录窗口调到前面</button><button class="btn sm" id="loginClose" type="button">✖ 关闭登录窗口</button><span class="small muted">看不到登录窗口？先点左边；还不行就关掉重开</span></div>
    <div id="netResult" hidden style="margin-top:14px"></div>
    <label class="chip" style="margin-top:12px;display:inline-block" title="关掉后，采集时浏览器窗口会一直显示在前面"><input type="checkbox" id="bgBrowser"><span>搜索/监控时浏览器在后台运行（不挡你干活；需要你登录或验证时才自动弹到前面）</span></label>
    <div class="hint bad" id="browserMissing" hidden style="margin-top:12px">还没装好浏览器组件：请关闭程序窗口，重新双击 <b>start.bat</b>，它会自动安装（装不上时会改用电脑自带的 Edge）。</div>
@@ -498,10 +499,18 @@ $('loginButton').addEventListener('click', guard($('loginButton'), async () => {
  $('loginStatus').textContent = r.message; toast('浏览器正在打开，请在弹出的窗口里扫码登录，登录完关掉整个窗口');
  pollLogin();
 }));
+$('loginFront').addEventListener('click', guard($('loginFront'), async () => {
+ const r = await post('/api/browser-login/front');
+ toast(r.raised ? '登录窗口已调到最前面' : '没找到登录窗口：请看任务栏上的 Edge 图标，或点「关闭登录窗口」后重新打开', !r.raised);
+}));
+$('loginClose').addEventListener('click', guard($('loginClose'), async () => {
+ await post('/api/browser-login/close'); toast('登录窗口已关闭');
+}));
 function pollLogin(){
+ $('loginHelp').hidden = false;
  clearInterval(loginPoll);
  loginPoll = setInterval(async () => {
-  try{const s = await api('/api/browser-login'); $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : s.status === 'partial' ? 'warn' : ''}">${esc(s.message)}</span>`;
+  try{const s = await api('/api/browser-login'); $('loginHelp').hidden = s.status !== 'running'; $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : s.status === 'partial' ? 'warn' : ''}">${esc(s.message)}</span>`;
    if(s.status !== 'running'){clearInterval(loginPoll); refreshLoginStates().catch(() => {})}}catch{clearInterval(loginPoll)}
  }, 3000);
 }
