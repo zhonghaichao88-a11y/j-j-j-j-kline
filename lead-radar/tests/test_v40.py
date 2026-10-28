@@ -651,3 +651,32 @@ def test_login_front_and_close_endpoints(context, monkeypatch):
 
 def test_window_helpers_are_noops_off_windows():
     assert bc.bring_to_front(123) is False and bc.close_windows(123) is False and bc._windows_of(123) == []
+
+
+def test_prefetcher_loads_ahead_and_reuses_tabs():
+    log = []
+
+    class Tab:
+        def __init__(self, n): self.n = n
+        def goto(self, url, **kw):
+            log.append((self.n, url))
+            if url == "bad":
+                raise RuntimeError("net::ERR_CONNECTION_CLOSED")
+        def bring_to_front(self): pass
+        def wait_for_load_state(self, *a, **k): pass
+        def close(self): log.append((self.n, "closed"))
+
+    class Ctx:
+        made = 0
+        def new_page(self):
+            Ctx.made += 1; return Tab(Ctx.made)
+    pf = bc._Prefetcher(Ctx(), ["u0", "u1", "bad", "u3"])
+    assert pf.take(0).n == 1
+    assert [u for _, u in log] == ["u0", "u1", "bad"]          # two pages ahead are already loading
+    pf.done(0)
+    assert pf.take(1).n == 2 and ("u3" in [u for _, u in log])  # tab 1 reused for u3 after about:blank
+    pf.done(1)
+    with pytest.raises(RuntimeError):
+        pf.take(2)                                              # its load error surfaces when it's read
+    pf.close()
+    assert Ctx.made == 3 and sum(1 for _, u in log if u == "closed") == 3

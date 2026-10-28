@@ -268,6 +268,16 @@ METRICS_DOM_JS = r"""(platform) => {
     const value = txt(el).replace(/^(发布于|编辑于|发表于)\s*/, '');
     if (value && /\d/.test(value)) { out.published = value.slice(0, 60); break; }
   }
+  if (platform === 'bilibili') {
+    // bilibili ships the video's public counters in the page itself; the reply count lets the
+    // collector skip scrolling for comments on videos that have none.
+    const st = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.videoData && window.__INITIAL_STATE__.videoData.stat;
+    if (st) {
+      out.comment = String(st.reply ?? '');
+      for (const [k, v] of [['like', st.like], ['view', st.view], ['collect', st.favorite], ['coin', st.coin], ['share', st.share]])
+        if (out[k] === undefined && v !== undefined) out[k] = String(v);
+    }
+  }
   if (!out.authorHref) {
     const a = document.querySelector('.author-wrapper a[href*="/user/profile/"], [data-e2e="user-info"] a[href*="/user/"], a.up-name, .AuthorInfo a[href*="/people/"]');
     if (a) { out.authorHref = a.href; out.author = out.author || txt(a).slice(0, 160); }
@@ -830,8 +840,25 @@ def _is_network_error(exc) -> bool:
     return "net::ERR_" in text or "Timeout" in text
 
 
+def _saved_route(profile_dir: Path):
+    try:
+        saved = json.loads(_route_file(profile_dir).read_text(encoding="utf-8"))
+        return saved.get("route"), saved.get("channel")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def forget_route(profile_dir: Path):
+    """After a network error: test the routes again on the next run."""
+    try:
+        _route_file(profile_dir).unlink()
+    except OSError:
+        pass
+
+
 def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
-                      note: Callable[[str], None] | None = None, background: bool = False, **kwargs):
+                      note: Callable[[str], None] | None = None, background: bool = False,
+                      trust_saved: bool = False, **kwargs):
     """Launch the collector browser with a network route that can open *every* site in
     `test_urls` (one URL per selected platform: xiaohongshu opening fine says nothing about
     douyin). Only *network* errors such as ERR_CONNECTION_CLOSED count as failures; login
@@ -840,9 +867,19 @@ def _launch_reachable(pw, profile_dir: Path, test_urls, headless: bool = False,
     Returns (context, route description)."""
     urls = [test_urls] if isinstance(test_urls, str) else list(dict.fromkeys(test_urls))
     host = lambda u: urlparse(u).hostname or u
+    candidates = _route_candidates(profile_dir)
+    if trust_saved and candidates and _saved_route(profile_dir) == candidates[0]:
+        # The route that worked last time: start right away instead of test-loading every site first.
+        route, channel = candidates[0]
+        try:
+            return (_launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel,
+                            background=background, **kwargs), describe_route(route, channel))
+        except RuntimeError:
+            if not channel:
+                raise
     best = None            # (opened count, route, channel, failing hosts)
     tried = []
-    for route, channel in _route_candidates(profile_dir):
+    for route, channel in candidates:
         try:
             ctx = _launch(pw, _profile_for(profile_dir, channel), headless, route=route, channel=channel,
                           background=background, **kwargs)
@@ -1074,6 +1111,52 @@ def saved_login_states(profile_dir: Path, platforms=None):
     return {p: login_state(cookies, p) for p in platforms}
 
 
+class _Prefetcher:
+    """Open the next work pages in background tabs while the current one is being read, so
+    page loads overlap instead of running one after another (at most AHEAD+1 tabs at once)."""
+    AHEAD = 2
+
+    def __init__(self, context, urls):
+        self.context, self.urls, self.tabs, self.free = context, urls, {}, []
+
+    def _start(self, i):
+        if i >= len(self.urls) or i in self.tabs:
+            return
+        tab = self.free.pop() if self.free else self.context.new_page()
+        try:
+            tab.goto(self.urls[i], wait_until="commit", timeout=30000)   # returns once loading has begun
+            self.tabs[i] = (tab, None)
+        except Exception as exc:
+            self.tabs[i] = (tab, exc)
+
+    def take(self, i):
+        for j in range(i, i + self.AHEAD + 1):
+            self._start(j)
+        tab, error = self.tabs[i]
+        if error is not None:
+            raise error
+        tab.bring_to_front()                      # hidden tabs don't render lazy content
+        tab.wait_for_load_state("domcontentloaded", timeout=30000)
+        return tab
+
+    def done(self, i):
+        entry = self.tabs.pop(i, None)
+        if entry:
+            try:
+                entry[0].goto("about:blank", wait_until="commit", timeout=5000)
+                self.free.append(entry[0])
+            except Exception:
+                pass
+
+    def close(self):
+        for tab in self.free + [t for t, _ in self.tabs.values()]:
+            try:
+                tab.close()
+            except Exception:
+                pass
+        self.tabs, self.free = {}, []
+
+
 def _settle(page, platform, max_ms: int = 3000):
     """Read the work's counters as soon as they render instead of always sleeping a fixed 2.2 s."""
     detail, waited = {}, 0
@@ -1110,7 +1193,7 @@ def _wait_until_usable(page, platform, label, on_event, wait_seconds, headless, 
                 told = True
             _banner(page, f"Lead Radar：{label}需要你登录或完成安全验证，完成后程序自动继续（还剩 {int(deadline - time.time())} 秒）。"
                           "完成前程序不会动这个页面。", warn=True)
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(1000 if not told else 3000)   # results usually render within 1-3 s
         rows = probe()
         if rows:
             if told:
@@ -1206,7 +1289,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
         context, route_desc = _launch_reachable(
             pw, profile_dir, _test_url_for(platforms), headless,
             note=lambda m: on_event(platforms[0], "searching", [], m), args=["--disable-notifications"],
-            background=background)
+            background=background, trust_saved=True)
         try:
             page = context.pages[0] if context.pages else context.new_page()
             try:
@@ -1222,8 +1305,9 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                     continue
                 on_event(platform, "searching", [], f"正在打开{label}搜索页（{'最新优先' if sort == 'latest' else '综合排序'}）。")
                 try:
+                    page.bring_to_front()
                     page.goto(search_url(platform, keyword, sort), wait_until="domcontentloaded", timeout=45000)
-                    page.wait_for_timeout(2500)
+                    page.wait_for_timeout(700)
                     _banner(page, AUTO_NOTE)
 
                     def probe():
@@ -1248,7 +1332,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                     if not posts and sort == "latest" and search_url(platform, keyword, "latest") != search_url(platform, keyword, "relevance"):
                         # Newest-first parameter not honoured by this site version: fall back.
                         page.goto(search_url(platform, keyword, "relevance"), wait_until="domcontentloaded", timeout=45000)
-                        page.wait_for_timeout(2500)
+                        page.wait_for_timeout(700)
                         posts, blocked_msg = _wait_until_usable(page, platform, label, on_event, 15, headless, probe, background)
                         if blocked_msg:
                             on_event(platform, "error", [], blocked_msg)
@@ -1262,7 +1346,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                             break
                         page.mouse.move(665, 500)
                         page.mouse.wheel(0, 1600)
-                        page.wait_for_timeout(1500)
+                        page.wait_for_timeout(1000)
                         merged = {canonical_post_url(platform, r["url"]): r for r in posts}
                         for row in probe():
                             merged.setdefault(canonical_post_url(platform, row["url"]), row)
@@ -1281,6 +1365,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                                         dedup_token=canonical_post_url(platform, post["url"])) for post in unique]
                     on_event(platform, "reading", cards, f"发现 {len(unique)} 条作品，已先存入线索；正在补充互动数据和评论。")
                     total_comments = 0
+                    prefetch = _Prefetcher(context, [post["url"] for post in unique])
                     for idx, post in enumerate(unique, start=1):
                         title = str(post.get("title") or "").strip()[:400] or "未命名作品"
                         summary = _clean_card_text(post.get("text") or "")
@@ -1291,20 +1376,20 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                         published = ""
                         comments = []
                         try:
-                            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                            detail = _settle(page, platform)
-                            _banner(page, AUTO_NOTE)
-                            if _blocked(page) and not headless:
-                                _show_window(page, True)
+                            tab = prefetch.take(idx - 1)
+                            detail = _settle(tab, platform)
+                            _banner(tab, AUTO_NOTE)
+                            if _blocked(tab) and not headless:
+                                _show_window(tab, True)
                                 on_event(platform, "waiting_login", [], f"{label}作品页需要登录/验证：浏览器窗口已弹到前面，请完成后自动继续。")
                                 end = time.time() + max(3, int(login_wait_seconds))
-                                while time.time() < end and _blocked(page):
-                                    _banner(page, f"Lead Radar：请完成登录/验证，完成后自动继续（还剩 {int(end - time.time())} 秒）", warn=True)
-                                    page.wait_for_timeout(3000)
-                                _banner(page, AUTO_NOTE)
+                                while time.time() < end and _blocked(tab):
+                                    _banner(tab, f"Lead Radar：请完成登录/验证，完成后自动继续（还剩 {int(end - time.time())} 秒）", warn=True)
+                                    tab.wait_for_timeout(3000)
+                                _banner(tab, AUTO_NOTE)
                                 if background:
-                                    _show_window(page, False)
-                                detail = _settle(page, platform)
+                                    _show_window(tab, False)
+                                detail = _settle(tab, platform)
                             metrics.update(clean_metrics(detail))
                             raw_time = str(detail.get("published") or "")[:60]
                             # "3小时前" / "昨天 12:30" -> ISO, so leads sort and filter by real publish time
@@ -1319,7 +1404,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                                 gathered, idle = {}, 0
                                 for rnd in range(10):
                                     before = len(gathered)
-                                    for row in _visible_rows(page, COMMENTS_DOM_JS, platform):
+                                    for row in _visible_rows(tab, COMMENTS_DOM_JS, platform):
                                         gathered.setdefault((row.get("author"), row.get("text")), row)
                                     if len(gathered) >= comments_per_post:
                                         break
@@ -1329,8 +1414,8 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                                             break
                                     elif rnd >= 6:
                                         break          # ~5 s of scrolling and still none: no visible comments
-                                    _scroll_comments(page, platform)
-                                    page.wait_for_timeout(800)
+                                    _scroll_comments(tab, platform)
+                                    tab.wait_for_timeout(800)
                                 comments = list(gathered.values())[:comments_per_post]
                         except Exception as exc:
                             on_event(platform, "reading", [], f"第 {idx} 条作品的详情/评论不可读取：{type(exc).__name__}；继续处理其他作品。")
@@ -1344,10 +1429,12 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                                 batch.append(c)
                                 total_comments += 1
                         on_event(platform, "reading", batch, f"{label}已处理 {idx}/{len(unique)} 条作品，读取 {total_comments} 条可见评论。")
-                        if idx < len(unique):
-                            page.wait_for_timeout(400)
+                        prefetch.done(idx - 1)
+                    prefetch.close()
                     on_event(platform, "done", [], f"{label}已完成：{len(unique)} 条作品，{total_comments} 条可见评论（不保证全量）。")
                 except Exception as exc:
+                    if _is_network_error(exc):
+                        forget_route(profile_dir)   # the network changed: re-test routes next time
                     on_event(platform, "error", [], f"{label}打不开：{friendly_net_error(exc)}")
         finally:
             context.close()

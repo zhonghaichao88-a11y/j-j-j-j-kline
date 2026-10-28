@@ -863,7 +863,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.1.3", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.1.4", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -905,7 +905,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.1.3", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.1.4", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1563,7 +1563,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.1.3", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.1.4", build=BUILD_ID, root=str(ROOT))
     return result
 
 
@@ -1651,8 +1651,13 @@ def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, ex
     reports = {p: {"status": "queued", "fetched": 0, "inserted": 0, "error": ""} for p in platforms}
     fatal = ""
     seen = set()
+    lock = threading.Lock()
 
     def event(platform, state, batch, message):
+        with lock:
+            _event(platform, state, batch, message)
+
+    def _event(platform, state, batch, message):
         r = reports[platform]
         r["status"] = state
         r["message"] = message[:260]
@@ -1670,21 +1675,9 @@ def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, ex
 
     browser_selected = [p for p in platforms if p in BROWSER_PLATFORMS]
     api_selected = [p for p in platforms if p not in BROWSER_PLATFORMS]
-    if browser_selected:
-        try:
-            collect_in_browser(query, browser_selected, DATA_DIR / "browser_profile", event,
-                               max_posts=max_posts, comments_per_post=max_comments,
-                               headless=MONITOR_HEADLESS,
-                               login_wait_seconds=int(os.getenv("MONITOR_LOGIN_WAIT_SECONDS", "60")),
-                               sort=sort, background=get_settings()["browser_background"])
-        except Exception as exc:
-            # Do not hide the failure behind a successful public-source poll.
-            for p in browser_selected:
-                if reports[p]["status"] not in ("done", "empty", "error"):
-                    event(p, "error", [], str(exc)[:250])
-            fatal = str(exc)[:300]
     configured_sources = {row["id"]: row for row in monitor_source_catalog()}
-    for platform in api_selected:
+
+    def api_one(platform):
         try:
             if not configured_sources.get(platform, {}).get("configured"):
                 raise RuntimeError("未配置授权接口或 API 密钥")
@@ -1696,6 +1689,25 @@ def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, ex
                 event(platform, "done", [], f"本轮完成：获取 {len(data)} 条，新增 {reports[platform]['inserted']} 条")
         except Exception as exc:
             event(platform, "error", [], str(exc)[:260] or type(exc).__name__)
+
+    # Public sources run all at once, alongside the browser part (they used to wait for it).
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(api_one, p) for p in api_selected]
+        if browser_selected:
+            try:
+                collect_in_browser(query, browser_selected, DATA_DIR / "browser_profile", event,
+                                   max_posts=max_posts, comments_per_post=max_comments,
+                                   headless=MONITOR_HEADLESS,
+                                   login_wait_seconds=int(os.getenv("MONITOR_LOGIN_WAIT_SECONDS", "60")),
+                                   sort=sort, background=get_settings()["browser_background"])
+            except Exception as exc:
+                # Do not hide the failure behind a successful public-source poll.
+                for p in browser_selected:
+                    if reports[p]["status"] not in ("done", "empty", "error"):
+                        event(p, "error", [], str(exc)[:250])
+                fatal = str(exc)[:300]
+        for f in futures:
+            f.result()
     fetched = sum(r["fetched"] for r in reports.values())
     new_count = sum(r["inserted"] for r in reports.values())
     successes = sum(1 for r in reports.values() if r["status"] == "done" and not r["error"])
