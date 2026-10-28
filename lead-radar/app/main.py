@@ -565,6 +565,14 @@ def save_items(data, *, manual_query="", return_ids=False, excludes=()):
                             existing.metrics_updated_at = NOW()
                         if item.author_url and not existing.author_url:
                             existing.author_url = item.author_url[:600]
+                if item.published_at or item.author:
+                    existing = s.get(Item, old_id)
+                    if existing is not None:
+                        # browser cards are saved first, their detail page adds these afterwards
+                        if item.published_at and not existing.published_at:
+                            existing.published_at = item.published_at
+                        if item.author and not existing.author:
+                            existing.author = item.author[:300]
                 if item.navigation_kind:
                     existing = s.get(Item, old_id)
                     if existing and (not existing.navigation_kind or existing.navigation_kind in ("assisted", "manual") or
@@ -854,7 +862,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.1.1", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.1.2", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -896,7 +904,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.1.1", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.1.2", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1349,9 +1357,14 @@ def comment_locator_status(job_id: str, request: Request):
 
 def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts: int, max_comments: int,
                         sort: str = "latest", excludes=()):
+    seen = set()   # browser works are reported twice (search card, then detail page): count once
+
     def event(platform: str, state: str, batch: list[PublicItem], message: str):
         inserted = matched = 0
         error = ""
+        with BROWSER_JOB_LOCK:
+            fresh = [x for x in batch if item_key(x) not in seen]
+            seen.update(item_key(x) for x in fresh)
         if batch:
             try:
                 matched, inserted = save_items(batch, manual_query=query, excludes=excludes)
@@ -1363,9 +1376,9 @@ def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts
                    "inserted": 0, "duplicates": 0, "message": "", "error": ""})
             report["status"] = state
             report["message"] = message
-            report["fetched"] += len(batch)
+            report["fetched"] += len(fresh)
             report["inserted"] += inserted
-            report["duplicates"] += max(0, matched - inserted)
+            report["duplicates"] += max(0, min(len(fresh), matched) - inserted)
             if error or state == "error":
                 report["error"] = error or message
             job["events"] = (job["events"] + [f"{_source_name(platform)}：{message}"])[-24:]
@@ -1376,16 +1389,20 @@ def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts
 
     browser_selected = [p for p in platforms if p in BROWSER_PLATFORMS]
     api_selected = [p for p in platforms if p not in BROWSER_PLATFORMS]
+    def api_one(platform):
+        event(platform, "searching", [], "正在请求接口…")
+        try:
+            data = monitor_fetch(platform, query, max_posts, max_comments)
+            event(platform, "reading", data, f"接口返回 {len(data)} 条")
+            event(platform, "done", [], f"完成：获取 {len(data)} 条")
+        except Exception as exc:
+            event(platform, "error", [], (str(exc) or type(exc).__name__)[:260])
+
+    # Public/authorized APIs all at once and at the same time as the browser part
+    # (they used to run one after another before the browser even started).
+    api_pool = ThreadPoolExecutor(max_workers=6) if api_selected else None
+    api_futures = [api_pool.submit(api_one, p) for p in api_selected] if api_pool else []
     try:
-        # Public/authorized APIs first: quick results while the browser part runs.
-        for platform in api_selected:
-            event(platform, "searching", [], "正在请求接口…")
-            try:
-                data = monitor_fetch(platform, query, max_posts, max_comments)
-                event(platform, "reading", data, f"接口返回 {len(data)} 条")
-                event(platform, "done", [], f"完成：获取 {len(data)} 条")
-            except Exception as exc:
-                event(platform, "error", [], (str(exc) or type(exc).__name__)[:260])
         if browser_selected:
             if not BROWSER_EXEC_LOCK.acquire(blocking=False):
                 with BROWSER_JOB_LOCK:
@@ -1403,6 +1420,10 @@ def _browser_job_runner(job_id: str, query: str, platforms: list[str], max_posts
             job = BROWSER_JOBS[job_id]
             job["error"] = str(exc)[:380]
     finally:
+        for f in api_futures:
+            f.result()
+        if api_pool:
+            api_pool.shutdown()
         with BROWSER_JOB_LOCK:
             BROWSER_JOBS[job_id]["status"] = "finished"
 
@@ -1515,7 +1536,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.1.1", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.1.2", build=BUILD_ID, root=str(ROOT))
     return result
 
 
@@ -1602,6 +1623,7 @@ def _monitor_once(monitor_id: int):
 def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, excludes=()):
     reports = {p: {"status": "queued", "fetched": 0, "inserted": 0, "error": ""} for p in platforms}
     fatal = ""
+    seen = set()
 
     def event(platform, state, batch, message):
         r = reports[platform]
@@ -1610,7 +1632,9 @@ def _run_monitor(monitor_id, query, platforms, max_posts, max_comments, sort, ex
         if batch:
             try:
                 matched, inserted = save_items(batch, manual_query=query, excludes=excludes)
-                r["fetched"] += len(batch)
+                fresh = [x for x in batch if item_key(x) not in seen]
+                seen.update(item_key(x) for x in fresh)
+                r["fetched"] += len(fresh)
                 r["inserted"] += inserted
             except Exception as exc:
                 r["error"] = "数据库写入失败：" + str(exc)[:180]

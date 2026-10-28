@@ -201,8 +201,8 @@ details.tool>.tool-body{padding:0 20px 18px}
    <details class="more"><summary>高级选项：排序、数量、监控间隔</summary>
     <div class="opts">
      <div><label for="optSort">搜索排序</label><select id="optSort"><option value="latest">最新发布优先</option><option value="relevance">综合排序</option></select></div>
-     <div><label for="optPosts">每个平台读几条作品</label><input id="optPosts" type="number" min="1" max="20" value="10"></div>
-     <div><label for="optComments">每条作品读几条评论</label><input id="optComments" type="number" min="0" max="30" value="20"></div>
+     <div><label for="optPosts">每个平台读几条作品</label><input id="optPosts" type="number" min="1" max="20" value="8"></div>
+     <div><label for="optComments">每条作品读几条评论（0 = 不读评论，最快）</label><input id="optComments" type="number" min="0" max="30" value="10"></div>
      <div style="grid-column:1/-1"><label for="optExcludes">排除词（可选，逗号隔开：包含这些词的内容不保存，例如 招聘,兼职,课程）</label><input id="optExcludes" placeholder="招聘, 兼职"></div>
      <div><label for="optInterval">持续监控间隔</label><select id="optInterval"><option value="5">每 5 分钟</option><option value="10">每 10 分钟</option><option value="15" selected>每 15 分钟（推荐）</option><option value="30">每 30 分钟</option><option value="60">每 1 小时</option><option value="180">每 3 小时</option></select></div>
     </div>
@@ -211,7 +211,7 @@ details.tool>.tool-body{padding:0 20px 18px}
     <button class="btn primary big" id="searchNowButton" type="button">🔍 立即搜索一次</button>
     <button class="btn big" id="monitorAdd" type="submit">⏱ 开启持续监控</button>
    </div>
-   <p class="small muted" style="margin:10px 0 0"><b>立即搜索一次</b>：现在搜一遍，结果进「线索」。<b>开启持续监控</b>：以后每隔一段时间自动搜，有新内容会提醒你（电脑和程序要一直开着，浏览器窗口不要关）。</p>
+   <p class="small muted" style="margin:10px 0 0"><b>立即搜索一次</b>：现在搜一遍，搜索结果几秒内就进「线索」，之后再慢慢补充点赞数和评论。<b>开启持续监控</b>：以后每隔一段时间自动搜，有新内容会提醒你（电脑和程序要一直开着，浏览器窗口不要关）。</p>
   </div></form>
  </div>
 
@@ -541,8 +541,8 @@ function formValues(){
  const platforms = checked('pf');
  if(!query){$('keyword').focus(); throw new Error('请先输入关键词')}
  if(!platforms.length) throw new Error('请至少勾选一个平台');
- const num = (id, lo, hi, d) => Math.min(hi, Math.max(lo, Number($(id).value) || d));
- return {query, platforms, sort: $('optSort').value, max_posts: num('optPosts', 1, 20, 10), max_comments: num('optComments', 0, 30, 20), excludes: terms($('optExcludes').value)};
+ const num = (id, lo, hi, d) => {const v = $(id).value.trim(); const n = v === '' ? d : Number(v); return Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : d))};  // 0 is a valid value
+ return {query, platforms, sort: $('optSort').value, max_posts: num('optPosts', 1, 20, 8), max_comments: num('optComments', 0, 30, 10), excludes: terms($('optExcludes').value)};
 }
 const STATE_LABEL = {queued:['等待中',''], searching:['正在打开','run'], waiting_login:['等你登录/验证','warnt'], reading:['读取中','run'], done:['完成','ok'], empty:['没有结果','warnt'], error:['失败','err']};
 let jobTimer;
@@ -557,7 +557,9 @@ async function watchJob(id){
    return `<div class="prow"><b>${esc(r.name || nameOf(p))}</b><div>${esc(r.message || '')}${r.error && r.status !== 'waiting_login' ? `<div class="bad small">${esc(r.error)}</div>` : ''}</div><div class="row"><span class="tag ${cls}">${label}</span><span class="small muted">读取 ${r.fetched} · 新增 <b class="${r.inserted ? 'good' : ''}">${r.inserted}</b></span></div></div>`}).join('');
   $('jobEvent').innerHTML = x.error ? `<span class="bad">${esc(x.error)}</span>` : esc(x.events?.[x.events.length - 1] || '');
   if(done){const n = Object.values(x.platforms).reduce((a, r) => a + r.inserted, 0); toast(`搜索完成，新增 ${n} 条线索`); refreshStats(); refreshAuthorsQuiet(); return}
-  if(x.platforms && Object.values(x.platforms).some(r => r.inserted)) refreshStats().catch(() => {});
+  const ins = Object.values(x.platforms || {}).reduce((a, r) => a + r.inserted, 0);
+  if(ins !== watchJob.lastInserted){watchJob.lastInserted = ins; refreshStats().catch(() => {});
+   if($('view-leads').classList.contains('active')) refreshItems().catch(() => {})}   // leads show up while the search runs
   jobTimer = setTimeout(tick, 2000);
  };
  await tick();

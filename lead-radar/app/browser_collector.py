@@ -975,6 +975,21 @@ def saved_login_states(profile_dir: Path, platforms=None):
     return {p: login_state(cookies, p) for p in platforms}
 
 
+def _settle(page, platform, max_ms: int = 3000):
+    """Read the work's counters as soon as they render instead of always sleeping a fixed 2.2 s."""
+    detail, waited = {}, 0
+    while waited < max_ms:
+        page.wait_for_timeout(500)
+        waited += 500
+        try:
+            detail = page.evaluate(METRICS_DOM_JS, platform) or {}
+        except Exception:
+            detail = {}
+        if any(k in detail for k in ("like", "comment", "view", "collect")):
+            break
+    return detail
+
+
 def _wait_until_usable(page, platform, label, on_event, wait_seconds, headless, probe, background=False):
     """Poll `probe()` until it returns rows. If a login/verification wall shows, bring the window
     to the front, say so on the page and in the console, and wait for a human to finish it.
@@ -1157,7 +1172,15 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                         on_event(platform, "empty", [], "页面未提供可读取的搜索结果。可能需要登录、验证、调整关键词，或平台已改变页面结构。不会伪造数据。")
                         continue
                     unique = posts[:max_posts]
-                    on_event(platform, "reading", [], f"发现 {len(unique)} 条可见作品，正在依次读取作品、互动数据和评论。")
+                    # Save what the search page already shows right away: leads appear in seconds,
+                    # the detail pages below only add counters, publish time and comments.
+                    cards = [PublicItem(label + "作品", str(post.get("title") or "").strip()[:400] or "未命名作品",
+                                        _clean_card_text(post.get("text") or "") or str(post.get("title") or "")[:400],
+                                        post["url"], str(post.get("author") or "")[:160], "",
+                                        author_url=safe_profile_url(platform, post.get("authorHref") or ""),
+                                        metrics=clean_metrics({"like": post.get("like")}),
+                                        dedup_token=canonical_post_url(platform, post["url"])) for post in unique]
+                    on_event(platform, "reading", cards, f"发现 {len(unique)} 条作品，已先存入线索；正在补充互动数据和评论。")
                     total_comments = 0
                     for idx, post in enumerate(unique, start=1):
                         title = str(post.get("title") or "").strip()[:400] or "未命名作品"
@@ -1170,7 +1193,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                         comments = []
                         try:
                             page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                            page.wait_for_timeout(2200)
+                            detail = _settle(page, platform)
                             _banner(page, AUTO_NOTE)
                             if _blocked(page) and not headless:
                                 _show_window(page, True)
@@ -1182,26 +1205,33 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                                 _banner(page, AUTO_NOTE)
                                 if background:
                                     _show_window(page, False)
-                            try:
-                                detail = page.evaluate(METRICS_DOM_JS, platform) or {}
-                            except Exception:
-                                detail = {}
+                                detail = _settle(page, platform)
                             metrics.update(clean_metrics(detail))
                             raw_time = str(detail.get("published") or "")[:60]
                             # "3小时前" / "昨天 12:30" -> ISO, so leads sort and filter by real publish time
                             published = parse_cn_time(raw_time) or raw_time
                             author = author or str(detail.get("author") or "")[:160]
                             author_url = author_url or safe_profile_url(platform, detail.get("authorHref") or "")
-                            if comments_per_post:
-                                # Accumulate while scrolling: comment lists are often virtualised.
-                                gathered = {}
-                                for _ in range(8):
+                            if comments_per_post and metrics.get("comment") != 0:   # page says 0 comments: don't scroll for them
+                                # Accumulate while scrolling (lists are virtualised); stop as soon as two
+                                # scrolls bring nothing new instead of always scrolling 8 times.
+                                # (bilibili renders its first comments only 2-4 s after the first scroll,
+                                # so the "nothing new" rule starts counting once comments have appeared)
+                                gathered, idle = {}, 0
+                                for rnd in range(10):
+                                    before = len(gathered)
                                     for row in _visible_rows(page, COMMENTS_DOM_JS, platform):
                                         gathered.setdefault((row.get("author"), row.get("text")), row)
                                     if len(gathered) >= comments_per_post:
                                         break
+                                    if gathered:
+                                        idle = idle + 1 if len(gathered) == before else 0
+                                        if idle >= 2:
+                                            break
+                                    elif rnd >= 6:
+                                        break          # ~5 s of scrolling and still none: no visible comments
                                     _scroll_comments(page, platform)
-                                    page.wait_for_timeout(1100)
+                                    page.wait_for_timeout(800)
                                 comments = list(gathered.values())[:comments_per_post]
                         except Exception as exc:
                             on_event(platform, "reading", [], f"第 {idx} 条作品的详情/评论不可读取：{type(exc).__name__}；继续处理其他作品。")
@@ -1216,7 +1246,7 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                                 total_comments += 1
                         on_event(platform, "reading", batch, f"{label}已处理 {idx}/{len(unique)} 条作品，读取 {total_comments} 条可见评论。")
                         if idx < len(unique):
-                            page.wait_for_timeout(1200)
+                            page.wait_for_timeout(400)
                     on_event(platform, "done", [], f"{label}已完成：{len(unique)} 条作品，{total_comments} 条可见评论（不保证全量）。")
                 except Exception as exc:
                     on_event(platform, "error", [], f"{label}打不开：{friendly_net_error(exc)}")
