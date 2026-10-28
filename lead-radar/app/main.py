@@ -35,8 +35,10 @@ from .intent import analyze
 from .browser_collector import (
     SUPPORTED as BROWSER_PLATFORMS, LABEL_TO_PLATFORM, canonical_post_url, collect_in_browser,
     locate_visible_comment, open_login_pages, safe_post_url, saved_login_states, browser_channel, BROWSER_NAMES,
-    LOGIN_PROCESS, bring_to_front, close_windows,
+    LOGIN_PROCESS, bring_to_front, close_windows, SCRIPT_SOURCES, extension_mode, ensure_ext_browser,
+    LOGIN_PAGES, login_state, cookie_db_states,
 )
+from .ext_bridge import BRIDGE, BridgeError
 from .adapters import (
     PLATFORM_ENV, PublicItem, demo_items, fetch_github, fetch_hackernews, fetch_platform,
     fetch_google_news, fetch_bing_news, fetch_bluesky, fetch_reddit_with_comments, fetch_github_with_comments,
@@ -48,7 +50,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # Fingerprint of the running code. start.ps1 computes the same hash over the same files
 # to tell whether the server on the port is this exact copy or an older one left running.
 BUILD_FILES = ("app/main.py", "app/browser_collector.py", "app/adapters.py", "app/netcheck.py", "app/relay.py",
-               "app/intent.py", "static/index.html")
+               "app/intent.py", "app/ext_bridge.py", "static/index.html")
 BUILD_ID = hashlib.sha256(b"".join((ROOT / f).read_bytes() for f in BUILD_FILES if (ROOT / f).exists())).hexdigest()[:16]
 load_dotenv(ROOT / ".env", override=False)
 DATA_DIR = Path(os.getenv("APP_DATA_DIR", str(ROOT / "data"))).resolve()
@@ -838,6 +840,7 @@ async def lifespan(app):
     if os.getenv("APP_BIND_ADDRESS", "127.0.0.1") not in ("127.0.0.1", "localhost", "::1") and not os.getenv("APP_PASSWORD"):
         raise RuntimeError("对外绑定端口之前请在 .env 设置 APP_PASSWORD")
     init_db()
+    BRIDGE.configure(DATA_DIR, f"http://127.0.0.1:{int(os.getenv('APP_PORT', '8000'))}", SCRIPT_SOURCES)
     # A previous server process may have died mid-poll. Resume persisted tasks.
     with Session.begin() as session:
         for monitor in session.scalars(select(Monitor).where(Monitor.active.is_(True),
@@ -863,7 +866,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.1.5", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.2.0", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -880,7 +883,7 @@ def monitor_sources():
 async def require_login(request: Request, call_next):
     """Optional browser HTTP Basic password for LAN access; no external auth dependency."""
     password = os.getenv("APP_PASSWORD", "")
-    if password and request.url.path != "/api/health":
+    if password and request.url.path != "/api/health" and not request.url.path.startswith(("/api/ext/", "/ext-home")):
         credentials = request.headers.get("authorization", "")
         valid = False
         if credentials.lower().startswith("basic "):
@@ -905,7 +908,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.1.5", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.2.0", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1501,6 +1504,8 @@ def browser_login(inp: BrowserLoginIn, request: Request):
     platforms = [p for p in dict.fromkeys(inp.platforms) if p in BROWSER_PLATFORMS]
     if not platforms:
         raise HTTPException(422, "请选择要登录的社交平台")
+    if extension_mode():
+        return _ext_login(platforms)
     if not browser_available():
         raise HTTPException(422, "未安装浏览器组件，请关闭程序后重新双击 start.bat 自动安装")
     if not BROWSER_EXEC_LOCK.acquire(blocking=False):
@@ -1527,10 +1532,68 @@ def browser_login(inp: BrowserLoginIn, request: Request):
     return dict(LOGIN_JOB)
 
 
+def _ext_login(platforms):
+    """Extension mode: open the login pages in the Lead Radar browser that keeps running."""
+    if LOGIN_JOB["status"] == "running":
+        raise HTTPException(409, "正在打开采集浏览器，请稍等")
+
+    def progress(status, message):
+        LOGIN_JOB.update(status=status, message=message)
+
+    def runner():
+        try:
+            ensure_ext_browser(DATA_DIR / "browser_profile", note=lambda m: progress("running", m))
+            BRIDGE.call("open_tabs", urls=[LOGIN_PAGES[p] for p in platforms])
+            bring_to_front(BRIDGE.pid(), wait_seconds=3)
+            progress("done", "已在「Lead Radar 采集浏览器」里打开 " + "、".join(BROWSER_PLATFORMS[p] for p in platforms) +
+                     "。请在每个标签页扫码登录，看到头像就好了。这个浏览器不用关（可以最小化），以后搜索和监控都用它，登录不会掉。")
+        except Exception as exc:
+            progress("error", (str(exc) or type(exc).__name__)[:300])
+
+    LOGIN_JOB["states"] = {}
+    progress("running", "正在打开 Lead Radar 采集浏览器…")
+    threading.Thread(target=runner, daemon=True).start()
+    return dict(LOGIN_JOB)
+
+
+@app.get("/ext-home")
+def ext_home():
+    return Response("""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Lead Radar 采集浏览器</title>
+<style>body{font:15px/1.7 system-ui,"Microsoft YaHei",sans-serif;max-width:640px;margin:60px auto;padding:0 20px;color:#17202f}
+h1{font-size:22px}.hint{background:#eef3ff;border-radius:10px;padding:12px 16px}</style></head><body>
+<h1>这是 Lead Radar 采集浏览器</h1>
+<p class="hint">请<b>不要关闭</b>这个浏览器（可以最小化）。在这里登录抖音、小红书等平台后，Lead Radar 会在这个浏览器里搜索和读取评论，登录状态会一直保留。</p>
+<p>它和你平时用的浏览器是分开的：这里的登录只给 Lead Radar 用。程序会在单独的小窗口里自动打开页面，请不要在那些窗口里操作。</p>
+</body></html>""", media_type="text/html; charset=utf-8")
+
+
+@app.get("/api/ext/poll")
+def ext_poll(request: Request):
+    _require_local_browser(request)
+    try:
+        return BRIDGE.poll(request.headers.get("x-lr-token", ""), request.headers.get("x-lr-version", ""))
+    except PermissionError:
+        raise HTTPException(403, "扩展令牌不对")
+
+
+@app.post("/api/ext/reply")
+async def ext_reply(request: Request):
+    _require_local_browser(request)
+    try:
+        BRIDGE.reply(request.headers.get("x-lr-token", ""), await request.json())
+    except PermissionError:
+        raise HTTPException(403, "扩展令牌不对")
+    return {"ok": True}
+
+
 @app.post("/api/browser-login/front")
 def browser_login_front(request: Request):
     """Bring the login window to the front (Windows opens it behind other windows)."""
     _require_local_browser(request)
+    if extension_mode():
+        if not BRIDGE.connected():
+            raise HTTPException(409, "采集浏览器没有在运行，请点「打开浏览器去登录」")
+        return {"raised": bring_to_front(BRIDGE.pid(), wait_seconds=3)}
     proc = LOGIN_PROCESS["proc"]
     if LOGIN_JOB["status"] != "running" or proc is None or proc.poll() is not None:
         raise HTTPException(409, "登录窗口没有在运行，请重新点「打开浏览器去登录」")
@@ -1557,11 +1620,24 @@ def browser_login_close(request: Request):
 def browser_login_state():
     """Which platforms the collector browser is signed in to (from the saved cookies on disk)."""
     profile = DATA_DIR / "browser_profile"
+    background = get_settings()["browser_background"]
+    if extension_mode():
+        states = {}
+        if BRIDGE.connected():
+            try:
+                cookies = BRIDGE.call("cookies", timeout=10) or []
+                states = {p: login_state(cookies, p) for p in BROWSER_PLATFORMS}
+            except BridgeError:
+                states = {}
+        if not states:
+            states = cookie_db_states(BRIDGE.profile, list(BROWSER_PLATFORMS))
+        return {"states": states, "busy": False, "browser": "Lead Radar 采集浏览器", "background": background,
+                "extension": True, "running": BRIDGE.connected()}
     busy = BROWSER_EXEC_LOCK.locked()
     states = {} if busy else saved_login_states(profile)
     channel = browser_channel(profile) if browser_available() or not busy else None
     return {"states": states, "busy": busy, "browser": BROWSER_NAMES.get(channel, "浏览器"),
-            "background": get_settings()["browser_background"]}
+            "background": background, "extension": False}
 
 
 @app.post("/api/network-check")
@@ -1570,7 +1646,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.1.5", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.2.0", build=BUILD_ID, root=str(ROOT))
     return result
 
 

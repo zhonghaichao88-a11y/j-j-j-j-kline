@@ -40,7 +40,7 @@ def test_search_validates_sources_query(context):
     assert client.post('/api/search-online',json={'query':'  ','sources':['github']}).status_code == 422
     assert client.post('/api/search-online',json={'query':'q','sources':[]}).status_code == 422
     health=client.get('/api/health').json()
-    assert health['online_search'] and health["version"] == "4.1.5"
+    assert health['online_search'] and health["version"] == "4.2.0"
     page=client.get('/').text
     assert 'id="apiPlatforms"' in page and '公开网站' in page
 

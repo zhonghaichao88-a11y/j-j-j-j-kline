@@ -100,7 +100,7 @@ function Find-SystemBrowser {
 
 function Get-LocalBuild {
     # Must match BUILD_ID in app/main.py: sha256 over these files' bytes, first 16 hex chars.
-    $files = 'app\main.py', 'app\browser_collector.py', 'app\adapters.py', 'app\netcheck.py', 'app\relay.py', 'app\intent.py', 'static\index.html'
+    $files = 'app\main.py', 'app\browser_collector.py', 'app\adapters.py', 'app\netcheck.py', 'app\relay.py', 'app\intent.py', 'app\ext_bridge.py', 'static\index.html'
     $ms = New-Object System.IO.MemoryStream
     foreach ($f in $files) {
         $path = Join-Path $Root $f

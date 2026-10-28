@@ -21,8 +21,11 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote, urlparse, parse_qs
 
+from contextlib import contextmanager
+
 from .adapters import PublicItem, clean_metrics
 from .intent import parse_cn_time
+from . import ext_bridge
 
 SUPPORTED = {
     "xhs": "小红书", "douyin": "抖音", "weibo": "微博", "zhihu": "知乎",
@@ -979,6 +982,15 @@ def _apply_latest_sort(page, platform: str):
     visible filter like a user would. Silently keeps default order if absent."""
     if platform != "xhs":
         return
+    if getattr(page, "ext", False):
+        try:
+            page.click_text(["筛选"])
+            page.wait_for_timeout(600)
+            page.click_text(["最新"])
+            page.wait_for_timeout(2200)
+        except Exception:
+            pass
+        return
     try:
         page.locator(".filter, .filter-box").or_(page.get_by_text("筛选", exact=True)).first.click(timeout=2500)
         page.wait_for_timeout(600)
@@ -991,6 +1003,11 @@ def _apply_latest_sort(page, platform: str):
 
 def _show_window(page, show: bool):
     """Bring the collector window on-screen and to the front (show=True) or park it again."""
+    if getattr(page, "ext", False):
+        try:
+            return page.show_window(show)
+        except Exception:
+            return False
     try:
         cdp = page.context.new_cdp_session(page)
         win = cdp.send("Browser.getWindowForTarget")["windowId"]
@@ -1084,7 +1101,12 @@ def saved_login_states(profile_dir: Path, platforms=None):
     expiry only; values stay encrypted and are never read). {} while the browser is open and the
     file is locked."""
     channel = browser_channel(profile_dir)
-    db = _cookie_db(_profile_for(profile_dir, channel))
+    return cookie_db_states(_profile_for(profile_dir, channel), platforms)
+
+
+def cookie_db_states(profile: Path, platforms=None):
+    """Login state per platform from one profile folder's cookie database (names/expiry only)."""
+    db = _cookie_db(profile) if profile else None
     platforms = list(platforms or SUPPORTED)
     if db is None:
         return {p: (False if p in LOGIN_COOKIES else None) for p in platforms}
@@ -1112,6 +1134,58 @@ def saved_login_states(profile_dir: Path, platforms=None):
         unix = (expires_utc / 1_000_000 - 11644473600) if expires_utc else -1
         cookies.append({"domain": host, "name": name, "expires": unix})
     return {p: login_state(cookies, p) for p in platforms}
+
+
+SCRIPT_SOURCES = {"search": SEARCH_DOM_JS, "comments": COMMENTS_DOM_JS, "metrics": METRICS_DOM_JS,
+                  "blocked": BLOCKED_DOM_JS, "locate": LOCATE_DOM_JS, "scroll_comments": SCROLL_COMMENTS_JS,
+                  "banner": BANNER_JS}
+EXT_SCRIPT_NAMES = {src: name for name, src in SCRIPT_SOURCES.items()}
+
+
+def extension_mode() -> bool:
+    return ext_bridge.BRIDGE.enabled()
+
+
+def _route_args_for_ext(profile_dir: Path):
+    env = os.getenv("BROWSER_PROXY", "auto").strip().lower()
+    if env not in ("", "auto"):
+        return _proxy_args(None)
+    saved = _saved_route(profile_dir)
+    route = saved[0] if saved and saved[0] else ("auto" if _system_proxy() else "system")
+    return _proxy_args(route)
+
+
+def ensure_ext_browser(profile_dir: Path, note=None):
+    return ext_bridge.BRIDGE.ensure_browser(_route_args_for_ext(profile_dir), note=note)
+
+
+@contextmanager
+def _collector_session(profile_dir: Path, test_urls, headless: bool = False, background: bool = False,
+                       note=None, **kwargs):
+    """Yield (context, description). Extension mode: a window in the running Lead Radar browser
+    (no automation, login stays). Otherwise: a Playwright-launched browser as before."""
+    if not headless and extension_mode():
+        ensure_ext_browser(profile_dir, note)
+        ctx = ext_bridge.ExtContext(ext_bridge.BRIDGE, EXT_SCRIPT_NAMES, background)
+        try:
+            yield ctx, "Lead Radar 采集浏览器（扩展模式）"
+        finally:
+            ctx.close()
+        return
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError(NO_BROWSER_MSG) from exc
+    with sync_playwright() as pw:
+        ctx, desc = _launch_reachable(pw, profile_dir, test_urls, headless, note=note,
+                                      background=background, **kwargs)
+        try:
+            yield ctx, desc
+        finally:
+            try:
+                ctx.close()
+            except Exception:
+                pass
 
 
 class _Prefetcher:
@@ -1224,50 +1298,50 @@ def locate_visible_comment(platform: str, post_url: str, comment_text: str, auth
     """
     if not safe_post_url(platform, post_url):
         raise ValueError("作品链接不属于支持的平台")
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(NO_BROWSER_MSG) from exc
     profile_dir.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as pw:
-        origin = "https://" + (urlparse(post_url).hostname or "") + "/"
-        ctx, _ = _launch_reachable(pw, profile_dir, origin, note=lambda m: on_status("running", m))
-        try:
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto(post_url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(2000)
-            if _blocked(page):
-                on_status("running", "页面要求登录或验证，请在弹出的浏览器中完成，完成后会继续查找…")
-                for _ in range(40):
-                    if page.is_closed() or not _blocked(page):
-                        break
-                    page.wait_for_timeout(1500)
-            for i in range(max_scrolls + 1):
-                if page.is_closed():
-                    on_status("not_found", "窗口已关闭，未能定位评论")
-                    return
-                try:
-                    found = page.evaluate(LOCATE_DOM_JS, [platform, comment_text, author, comment_id])
-                except Exception:
-                    found = False
-                if isinstance(found, dict) and found.get("found"):
-                    on_status("located", "已匹配评论" + ("ID" if found.get("method") == "id" else "文字") + "并高亮；可以查看或回复")
-                    # Keep browser open for user to interact; finish on close or timeout.
-                    for _ in range(max(1, int(window_seconds))):
-                        if page.is_closed():
-                            break
-                        page.wait_for_timeout(1000)
-                    return
-                if i != max_scrolls:
-                    _scroll_comments(page, platform)
-                    page.wait_for_timeout(1000)
-            on_status("not_found", "没有在已加载的评论中找到原文；可能已折叠、排序变化或需要登录。请在已打开的作品页手动查看")
-            for _ in range(30):
-                if page.is_closed():
+    origin = "https://" + (urlparse(post_url).hostname or "") + "/"
+    with _collector_session(profile_dir, origin, note=lambda m: on_status("running", m)) as (ctx, _):
+        ext = getattr(ctx, "ext", False)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if ext:
+            ctx.keep_open = True          # extension mode: the window just stays for the person
+            page.show_window(True)
+        page.goto(post_url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(2000)
+        if _blocked(page):
+            on_status("running", "页面要求登录或验证，请在弹出的浏览器中完成，完成后会继续查找…")
+            for _ in range(40):
+                if page.is_closed() or not _blocked(page):
                     break
+                page.wait_for_timeout(1500)
+        for i in range(max_scrolls + 1):
+            if page.is_closed():
+                on_status("not_found", "窗口已关闭，未能定位评论")
+                return
+            try:
+                found = page.evaluate(LOCATE_DOM_JS, [platform, comment_text, author, comment_id])
+            except Exception:
+                found = False
+            if isinstance(found, dict) and found.get("found"):
+                on_status("located", "已匹配评论" + ("ID" if found.get("method") == "id" else "文字") + "并高亮；可以查看或回复")
+                if ext:
+                    return
+                # Keep browser open for user to interact; finish on close or timeout.
+                for _ in range(max(1, int(window_seconds))):
+                    if page.is_closed():
+                        break
+                    page.wait_for_timeout(1000)
+                return
+            if i != max_scrolls:
+                _scroll_comments(page, platform)
                 page.wait_for_timeout(1000)
-        finally:
-            ctx.close()
+        on_status("not_found", "没有在已加载的评论中找到原文；可能已折叠、排序变化或需要登录。请在已打开的作品页手动查看")
+        if ext:
+            return
+        for _ in range(30):
+            if page.is_closed():
+                break
+            page.wait_for_timeout(1000)
 
 
 def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
@@ -1281,19 +1355,13 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
     A user may need to sign in manually in the browser window. If blocked,
     the crawler reports it and moves on; it never attempts to bypass the check.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(NO_BROWSER_MSG) from exc
     max_posts = min(MAX_POSTS, max(1, int(max_posts)))
     comments_per_post = min(MAX_COMMENTS_PER_POST, max(0, int(comments_per_post)))
     profile_dir.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as pw:
-        context, route_desc = _launch_reachable(
-            pw, profile_dir, _test_url_for(platforms), headless,
-            note=lambda m: on_event(platforms[0], "searching", [], m), args=["--disable-notifications"],
-            background=background, trust_saved=True)
-        try:
+    with _collector_session(profile_dir, _test_url_for(platforms), headless, background,
+                            note=lambda m: on_event(platforms[0], "searching", [], m),
+                            args=["--disable-notifications"], trust_saved=True) as (context, route_desc):
+        if True:   # (kept the block structure of the former try/finally)
             page = context.pages[0] if context.pages else context.new_page()
             try:
                 cookies = context.cookies()
@@ -1439,8 +1507,6 @@ def collect_in_browser(keyword: str, platforms: list[str], profile_dir: Path,
                     if _is_network_error(exc):
                         forget_route(profile_dir)   # the network changed: re-test routes next time
                     on_event(platform, "error", [], f"{label}打不开：{friendly_net_error(exc)}")
-        finally:
-            context.close()
 
 
 LOGIN_PAGES = {

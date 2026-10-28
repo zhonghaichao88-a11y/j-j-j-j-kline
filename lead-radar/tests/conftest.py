@@ -1,3 +1,5 @@
+import os
+os.environ.setdefault("BROWSER_MODE", "playwright")   # unit tests never start a real browser
 import importlib
 import pytest
 from fastapi.testclient import TestClient

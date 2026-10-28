@@ -153,7 +153,7 @@ details.tool>.tool-body{padding:0 20px 18px}
 </head>
 <body>
 <header class="top"><div class="top-inner">
- <div class="brand">LEAD RADAR<small>4.1 · 全网关键词获客 · 买家识别 · 跟进管理</small></div>
+ <div class="brand">LEAD RADAR<small>4.2 · 全网关键词获客 · 买家识别 · 跟进管理</small></div>
  <div class="pills" id="metrics"></div>
 </div></header>
 <nav class="tabs"><div class="tabs-inner" role="tablist">
@@ -177,7 +177,7 @@ details.tool>.tool-body{padding:0 20px 18px}
  <div class="card" id="loginCard">
   <div class="step"><div class="step-no">1</div><div class="step-body">
    <h2>登录平台（首次使用做一次就行）</h2>
-   <p class="desc">小红书、抖音、知乎、TikTok 必须登录才能搜索（B站不用）。点「打开浏览器去登录」会弹出一个<b>普通浏览器窗口</b>（程序不会控制它，不会自己跳转或关闭），在每个标签页用手机扫码登录，<b>看到自己的头像</b>后关掉整个浏览器窗口，下面就会显示登录结果。</p>
+   <p class="desc" id="loginDesc">小红书、抖音、知乎、TikTok 必须登录才能搜索（B站不用）。点「打开浏览器去登录」会打开<b>「Lead Radar 采集浏览器」</b>，在每个标签页用手机扫码登录，<b>看到自己的头像</b>就好了。<b>这个浏览器不用关（可以最小化）</b>，以后搜索和监控都在它里面进行，登录不会掉。</p>
    <div class="chips" id="loginPlatforms"></div>
    <div class="row small" id="loginStates" style="margin-top:10px;gap:6px"></div>
    <div class="actions-main"><button class="btn" id="loginButton" type="button">🔑 打开浏览器去登录</button><button class="btn ghost" id="netCheckButton" type="button">🩺 打不开？网络诊断</button><span class="muted small" id="loginStatus"></span></div>
@@ -479,10 +479,13 @@ const LOGIN_REQ = ['xhs', 'douyin', 'zhihu', 'tiktok'];
 async function refreshLoginStates(){
  const r = await api('/api/browser-login-state');
  $('bgBrowser').checked = !!r.background;
+ $('loginClose').hidden = !!r.extension;   // extension mode: the browser is meant to stay open
+ if(!r.extension) $('loginDesc').innerHTML = '小红书、抖音、知乎、TikTok 必须登录才能搜索（B站不用）。点「打开浏览器去登录」会弹出一个<b>普通浏览器窗口</b>，在每个标签页用手机扫码登录，<b>看到自己的头像</b>后关掉整个浏览器窗口，下面就会显示登录结果。';
  if(r.busy && !Object.keys(r.states).length){$('loginStates').innerHTML = '<span class="muted">浏览器正在使用中，用完后显示登录状态</span>'; return}
  loginStates = r.states;
  const mark = (v, id) => v === true ? '<span class="tag ok">✔ 已登录</span>' : v === false ? (LOGIN_REQ.includes(id) ? '<span class="tag err">✘ 未登录</span>' : '<span class="tag">未登录（不影响搜索）</span>') : '<span class="tag">? 以浏览器里为准</span>';
- $('loginStates').innerHTML = `<span class="muted">登录状态（${esc(r.browser)}）：</span>` + catalog.filter(x => x.mode === 'browser')
+ $('loginStates').innerHTML = (r.extension ? `<span class="tag ${r.running ? 'ok' : ''}">采集浏览器：${r.running ? '运行中' : '未打开（搜索时会自动打开）'}</span>` : '') +
+  `<span class="muted">登录状态（${esc(r.browser)}）：</span>` + catalog.filter(x => x.mode === 'browser')
   .map(x => `<span>${esc(shortName(x))} ${mark(r.states[x.id], x.id)}</span>`).join('');
  const missing = catalog.filter(x => LOGIN_REQ.includes(x.id) && r.states[x.id] === false).map(shortName);
  $('notLoggedHint').hidden = !missing.length;
@@ -510,7 +513,7 @@ function pollLogin(){
  $('loginHelp').hidden = false;
  clearInterval(loginPoll);
  loginPoll = setInterval(async () => {
-  try{const s = await api('/api/browser-login'); $('loginHelp').hidden = s.status !== 'running'; $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : s.status === 'partial' ? 'warn' : ''}">${esc(s.message)}</span>`;
+  try{const s = await api('/api/browser-login'); $('loginHelp').hidden = s.status !== 'running' && !/采集浏览器/.test(s.message); $('loginStatus').innerHTML = `<span class="${s.status === 'error' || /打不开/.test(s.message) ? 'bad' : s.status === 'done' ? 'good' : s.status === 'partial' ? 'warn' : ''}">${esc(s.message)}</span>`;
    if(s.status !== 'running'){clearInterval(loginPoll); refreshLoginStates().catch(() => {})}}catch{clearInterval(loginPoll)}
  }, 3000);
 }
@@ -655,6 +658,7 @@ $('monitorList').addEventListener('click', e => {
  })();
 });
 setInterval(() => {if(editingMonitor === null) monitorRefresh().catch(() => {})}, 20000);  // don't wipe an open edit form
+setInterval(() => {if($('view-home').classList.contains('active')) refreshLoginStates().catch(() => {})}, 15000);  // shows a login as soon as it happens
 
 /* ---------------------------------------------------------------- leads */
 const METRIC_LABELS = [['view','播放'],['like','点赞'],['collect','收藏'],['coin','投币'],['comment','评论'],['share','分享'],['repost','转发'],['quote','引用']];
