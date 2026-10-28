@@ -533,3 +533,44 @@ def test_login_state_endpoint_and_background_setting(context, monkeypatch):
     # saving the intent rules must not reset the browser option
     client.patch("/api/settings", json={"buyer_words": ["私域"]})
     assert client.get("/api/settings").json()["browser_background"] is False
+
+
+def test_first_login_opens_window_immediately_without_network_probe(monkeypatch, tmp_path):
+    """4.1.0 hung on "正在检测网络" (hidden probe browser). The login window must open directly."""
+    import urllib.request
+    import playwright.sync_api as sync_api
+    monkeypatch.delenv("BROWSER_CHANNEL", raising=False)
+    monkeypatch.delenv("BROWSER_PROXY", raising=False)
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"http": "http://127.0.0.1:7890"})
+    exe = tmp_path / "msedge.exe"; exe.write_text("")
+    monkeypatch.setattr(bc, "find_browser", lambda c: str(exe) if c == "msedge" else "")
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: (_ for _ in ()).throw(AssertionError("no Playwright needed")))
+    launched = {}
+
+    class Proc:
+        def __init__(self, args, **kw): launched["args"] = args
+        def poll(self): return 0
+    monkeypatch.setattr(bc.subprocess, "Popen", Proc)
+    monkeypatch.setattr(bc.time, "sleep", lambda s: None)
+    checks = iter([False, True, False])  # not open yet, open, closed
+    monkeypatch.setattr(bc, "_profile_open", lambda p: next(checks, False))
+    monkeypatch.setattr(bc, "saved_login_states", lambda d, p: {"douyin": True})
+    statuses = []
+    bc.open_login_pages(["douyin"], tmp_path / "browser_profile", lambda st, m: statuses.append(m))
+    assert "--proxy-server=http://127.0.0.1:7890" in launched["args"]      # domestic direct, rest via proxy
+    assert not any("检测网络" in m for m in statuses)
+
+
+def test_launch_uses_found_browser_path(monkeypatch, tmp_path):
+    monkeypatch.delenv("BROWSER_EXECUTABLE", raising=False)
+    monkeypatch.setattr(bc, "find_browser", lambda c: "C:/Users/me/AppData/Local/Microsoft/Edge/Application/msedge.exe" if c == "msedge" else "")
+    seen = {}
+
+    class Chromium:
+        def launch_persistent_context(self, **kw):
+            seen.update(kw); return "ctx"
+
+    class PW:
+        chromium = Chromium()
+    assert bc._launch(PW(), tmp_path, channel="msedge") == "ctx"
+    assert seen["executable_path"].endswith("msedge.exe") and "channel" not in seen

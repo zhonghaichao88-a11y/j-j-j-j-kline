@@ -854,7 +854,7 @@ async def lifespan(app):
                 pass
 
 
-app = FastAPI(title="Lead Radar API", version="4.1.0", lifespan=lifespan)
+app = FastAPI(title="Lead Radar API", version="4.1.1", lifespan=lifespan)
 
 BROWSER_JOBS = {}
 BROWSER_JOB_LOCK = threading.Lock()
@@ -896,7 +896,7 @@ def health(request: Request):
     try:
         with Session() as s:
             s.execute(select(func.count()).select_from(Item)).scalar_one()
-        out = {"ok": True, "version": "4.1.0", "build": BUILD_ID, "online_search": True,
+        out = {"ok": True, "version": "4.1.1", "build": BUILD_ID, "online_search": True,
                "platform_search": "browser-visible", "monitoring": "scheduled-polling"}
         if request.client and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient"):
             out["root"] = str(ROOT)  # local only: lets start.ps1 recognise a copy in another folder
@@ -1515,7 +1515,7 @@ def network_check(request: Request):
     _require_local_browser(request)
     from .netcheck import run_check
     result = run_check(include_browser=browser_available())
-    result.update(version="4.1.0", build=BUILD_ID, root=str(ROOT))
+    result.update(version="4.1.1", build=BUILD_ID, root=str(ROOT))
     return result
 
 

@@ -589,8 +589,13 @@ def _launch(pw, profile_dir: Path, headless: bool = False, route: str | None = N
     channels = [forced] if forced else [None, "msedge", "chrome"]
     last_error = None
     for channel in channels:
+        target = {}
+        if "executable_path" not in options and channel:
+            # the path we found ourselves (also per-user installs Playwright doesn't look for)
+            path = find_browser(channel)
+            target = {"executable_path": path} if path else {"channel": channel}
         try:
-            return pw.chromium.launch_persistent_context(**options, **({"channel": channel} if channel else {}))
+            return pw.chromium.launch_persistent_context(**options, **target)
         except Exception as exc:
             last_error = exc
             text = str(exc).lower()
@@ -1266,43 +1271,6 @@ def _profile_open(profile: Path) -> bool:
     return False
 
 
-def _probe_route(pw, profile_dir: Path, urls, note=None):
-    """Pick the network route with an invisible throw-away browser (no profile, nothing pops up)."""
-    best = None
-    for route, channel in _route_candidates(profile_dir):
-        proxy_opts, _ = proxy_settings(route)
-        options = {"headless": True, "args": list(proxy_opts.get("args", []))}
-        if "proxy" in proxy_opts:
-            options["proxy"] = proxy_opts["proxy"]
-        if os.getenv("BROWSER_EXECUTABLE", "").strip():
-            options["executable_path"] = os.environ["BROWSER_EXECUTABLE"].strip()
-        elif channel:
-            options["channel"] = channel
-        try:
-            browser = pw.chromium.launch(**options)
-        except Exception:
-            continue
-        failing = []
-        try:
-            page = browser.new_page()
-            for url in urls:
-                try:
-                    page.goto(url, wait_until="commit", timeout=15000)
-                except Exception as exc:
-                    if _is_network_error(exc):
-                        failing.append(urlparse(url).hostname or url)
-        finally:
-            browser.close()
-        if not failing:
-            _remember_route(profile_dir, route, channel)
-            return route
-        if note:
-            note(f"「{describe_route(route, channel)}」打不开 {'、'.join(failing)}，换一种网络方式…")
-        if best is None or len(failing) < best[0]:
-            best = (len(failing), route)
-    return best[1] if best else None
-
-
 def open_login_pages(platforms: list[str], profile_dir: Path, on_status: Callable[[str, str], None],
                      max_minutes: int = 120):
     """Open the collector's browser profile as a completely normal browser window — not driven by
@@ -1321,28 +1289,30 @@ def open_login_pages(platforms: list[str], profile_dir: Path, on_status: Callabl
         raise RuntimeError("采集浏览器的窗口已经开着（可能在任务栏里）。请直接在那个窗口里登录，或者把它关掉后再点「打开浏览器去登录」。")
     urls = [LOGIN_PAGES[p] for p in platforms if p in LOGIN_PAGES]
     exe = find_browser(channel)
+    # Open the window right away. 4.1.0 first tested network routes with a hidden browser here;
+    # on some PCs that hidden launch hung or failed silently and the login window never appeared.
+    # A login window only needs what a normal browser does: the route that worked last time, or
+    # (first time) domestic sites direct + system proxy for the rest, or simply no proxy flags.
     saved = {}
     try:
         saved = json.loads(_route_file(profile_dir).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
     env = os.getenv("BROWSER_PROXY", "auto").strip().lower()
-    known = env not in ("", "auto") or (saved.get("channel") == channel and saved.get("route"))
-    route = None if env not in ("", "auto") else (saved.get("route") if known else None)
-    if not exe or not known:
-        # Playwright is only needed to find its own Chromium or to test routes invisibly.
+    if env not in ("", "auto"):
+        route = None                                   # explicit .env setting, see proxy_settings
+    elif saved.get("channel") == channel and saved.get("route"):
+        route = saved["route"]
+    else:
+        route = "auto" if _system_proxy() else "system"
+    if not exe:
+        # only needed for Playwright's own Chromium (no Edge/Chrome on the computer)
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as pw:
-                if not exe:
-                    exe = pw.chromium.executable_path
-                if not known:
-                    on_status("running", "正在检测网络（不会弹出窗口）…")
-                    route = _probe_route(pw, profile_dir, _test_url_for(platforms),
-                                         note=lambda m: on_status("running", m))
-        except ImportError:
-            if not exe:
-                raise RuntimeError(NO_BROWSER_MSG)
+                exe = pw.chromium.executable_path
+        except Exception as exc:
+            raise RuntimeError(NO_BROWSER_MSG) from exc
     if not exe or not os.path.exists(exe):
         raise RuntimeError(NO_BROWSER_MSG + "（也没有找到 Edge/Chrome）")
     args = [exe, f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
